@@ -24,19 +24,28 @@ Afterwards you should be able to create workflows using the Sonos node.
 ## Features and possible use cases
 
 Currently supported features:
+* Play / Pause / Toggle Play/Pause / Skip Song / Previous Song on a selected group
+* Play Favorite on a selected group (optionally setting the volume first)
+* Play Playlist (Sonos playlists) on a selected group (optionally setting the volume first)
+* Set Group Volume on a selected group
+* Group Players: makes sure the selected players form one group (adds and removes players if needed)
 * Group all players
-* Set Group Volume
-* Play
-* Pause
-* Toggle Play/Pause
-* Set Group Volume
-* Play Favorite
-* Play File from URL
-* Skip Song
-* Previous Song
+* Play Audio Clip from a URL on every player of one or several groups (the music is lowered during the clip, then resumes)
 * Turn On/Off TV (requires supported device)
 * Start Home Theater Playback
 * Set Home Theater Options (night mode / dialog enhancement)
+
+### Targeting a group
+
+Sonos group IDs change every time speakers are regrouped, so the node stores the coordinator player of the selected group
+and looks up the group containing it on every execution. When the "Group" field is left empty, the first group found is used
+(behaviour of previous versions).
+
+When the fields are set with expressions (e.g. from a schedule table), the node also accepts names:
+* Group / Groups: a player name (`Living Room`), a group name (`Living Room + 1`) or an ID. Several targets can be given as a comma-separated list.
+* Favorite / Playlist: the name as displayed in the Sonos app, or its ID.
+
+Every incoming item is processed, and the output describes what was done (group name, members, volume, favorite...).
 
 Possible use cases
 * Every day at 10pm set the home theater to night mode and enhance dialogs, every morning switch back

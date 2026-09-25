@@ -1,0 +1,7 @@
+{
+    "version": "RINCON_LIVING:5",
+    "playlists": [
+        { "id": "0", "name": "Morning Mix", "type": "Sonos Playlist", "trackCount": 42 },
+        { "id": "1", "name": "Evening Mix", "type": "Sonos Playlist", "trackCount": 57 }
+    ]
+}

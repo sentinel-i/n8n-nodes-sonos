@@ -1,0 +1,31 @@
+{
+    "groups": [
+        {
+            "id": "RINCON_KITCHEN:10",
+            "name": "Kitchen",
+            "coordinatorId": "RINCON_KITCHEN",
+            "playbackState": "PLAYBACK_STATE_PLAYING",
+            "playerIds": ["RINCON_KITCHEN"]
+        },
+        {
+            "id": "RINCON_LIVING:20",
+            "name": "Living Room + 1",
+            "coordinatorId": "RINCON_LIVING",
+            "playbackState": "PLAYBACK_STATE_PLAYING",
+            "playerIds": ["RINCON_LIVING", "RINCON_DINING"]
+        },
+        {
+            "id": "RINCON_OFFICE:30",
+            "name": "Office",
+            "coordinatorId": "RINCON_OFFICE",
+            "playbackState": "PLAYBACK_STATE_PAUSED",
+            "playerIds": ["RINCON_OFFICE"]
+        }
+    ],
+    "players": [
+        { "id": "RINCON_KITCHEN", "name": "Kitchen", "capabilities": ["PLAYBACK", "CLOUD", "AUDIO_CLIP"] },
+        { "id": "RINCON_LIVING", "name": "Living Room", "capabilities": ["PLAYBACK", "CLOUD", "AUDIO_CLIP"] },
+        { "id": "RINCON_DINING", "name": "Dining Room", "capabilities": ["PLAYBACK", "CLOUD", "AUDIO_CLIP"] },
+        { "id": "RINCON_OFFICE", "name": "Office", "capabilities": ["PLAYBACK", "CLOUD", "AUDIO_CLIP"] }
+    ]
+}

@@ -5,6 +5,10 @@ import {
 	loadPlayers,
 	getFirstGroup,
 	loadFavorites,
+	loadGroups,
+	loadPlaylists,
+	resolveGroup,
+	getTopology,
 } from '../../nodes/Sonos/GenericFunctions';
 import { readFile } from 'fs';
 import { OptionsWithUrl, RequestPromiseOptions } from 'request-promise-native';
@@ -19,19 +23,32 @@ const readFileAsync = promisify(readFile);
 describe('Sonos Node', () => {
 	let credentials: Map<string, ICredentialDataDecryptedObject>;
 	let nodeParameters: INodeParameters = {};
+	let inputItems: INodeExecutionData[] = [];
 	let optionsStub: ILoadOptionsFunctions;
 	let executeStub: IExecuteFunctions;
 	let node: Sonos;
 	beforeEach(() => {
+		nodeParameters = {};
+		inputItems = [{ json: {} }];
 		credentials = new Map<string, ICredentialDataDecryptedObject>();
 		optionsStub = createMock<ILoadOptionsFunctions>({
 			getCredentials: (type: string) => Promise.resolve(credentials.get(type) as any),
 			getNodeParameter: (parameterName) => nodeParameters[parameterName],
 		});
+		// Parameters given as functions receive the item index, like expressions in n8n
+		const getNodeParameter = (parameterName: string, itemIndex: number, fallbackValue?: any) => {
+			const value = nodeParameters[parameterName] as any;
+			if (typeof value === 'function') {
+				return value(itemIndex);
+			}
+			return value === undefined ? fallbackValue : value;
+		};
 		executeStub = createMock<IExecuteFunctions>({
 			getCredentials: (type: string) => Promise.resolve(credentials.get(type) as any),
-			getNodeParameter: (parameterName) => nodeParameters[parameterName],
-		});
+		} as any);
+		executeStub.getNodeParameter = getNodeParameter as any;
+		executeStub.getInputData = () => inputItems;
+		executeStub.continueOnFail = () => false;
 		executeStub.helpers.returnJsonArray = (jsonData) => {
 			return [{ json: jsonData }] as INodeExecutionData[];
 		};
@@ -128,7 +145,7 @@ describe('Sonos Node', () => {
 			});
 			const result = await node.execute.apply(executeStub);
 			const executionResponse = result[0][0] as any;
-			expect(executionResponse?.json[0].message).toEqual('ok');
+			expect(executionResponse?.json.message).toEqual('ok');
 
 			const responseBody = JSON.parse(callOptions.body);
 			expect(responseBody.streamUrl).toEqual('https://url');
@@ -152,7 +169,7 @@ describe('Sonos Node', () => {
 			});
 			const result = await node.execute.apply(executeStub);
 			const executionResponse = result[0][0] as any;
-			expect(executionResponse?.json[0].message).toEqual('ok');
+			expect(executionResponse?.json.message).toEqual('ok');
 
 			const responseBody = JSON.parse(callOptions.body);
 			expect(responseBody.playerIds.length).toEqual(4);
@@ -176,7 +193,7 @@ describe('Sonos Node', () => {
 
 			const result = await node.execute.apply(executeStub);
 			const executionResponse = result[0][0] as any;
-			expect(executionResponse?.json[0].message).toEqual('ok');
+			expect(executionResponse?.json.message).toEqual('ok');
 
 			expect(callOptions.body).toEqual(undefined);
 			expect(callOptions.uri).toEqual(
@@ -186,6 +203,7 @@ describe('Sonos Node', () => {
 
 		it('Sets Group Volume', async () => {
 			nodeParameters['action'] = 'groupVolume';
+			nodeParameters['volume'] = 50;
 			let callOptions: OptionsWithUrl | any = {};
 			nodeParameters['household'] = 'HOUSEHOLD_1';
 			executeStub.helpers.requestOAuth2 = jest.fn().mockImplementation((...args: any[]) => {
@@ -199,7 +217,7 @@ describe('Sonos Node', () => {
 
 			const result = await node.execute.apply(executeStub);
 			const executionResponse = result[0][0] as any;
-			expect(executionResponse?.json[0].message).toEqual('ok');
+			expect(executionResponse?.json.message).toEqual('ok');
 
 			expect(callOptions.body).toEqual(JSON.stringify({ volume: 50 }));
 			expect(callOptions.uri).toEqual(
@@ -211,7 +229,7 @@ describe('Sonos Node', () => {
 			nodeParameters['action'] = 'playFavorite';
 			let callOptions: OptionsWithUrl | any = {};
 			nodeParameters['household'] = 'HOUSEHOLD_1';
-			nodeParameters['favorite'] = '1';
+			nodeParameters['favorite'] = '10';
 			nodeParameters['shuffle'] = true;
 			nodeParameters['repeat'] = true;
 			nodeParameters['crossfade'] = true;
@@ -219,6 +237,8 @@ describe('Sonos Node', () => {
 				callOptions = args[1];
 				if (callOptions.uri.endsWith('/groups')) {
 					return readFileAsync('./test/Sonos/groups.response.json', 'utf-8');
+				} else if (callOptions.uri.endsWith('/favorites') && callOptions.method === 'GET') {
+					return readFileAsync('./test/Sonos/favorites.response.json', 'utf-8');
 				} else {
 					return '{}';
 				}
@@ -226,10 +246,10 @@ describe('Sonos Node', () => {
 
 			const result = await node.execute.apply(executeStub);
 			const executionResponse = result[0][0] as any;
-			expect(executionResponse?.json[0].message).toEqual('ok');
+			expect(executionResponse?.json.message).toEqual('ok');
 
 			const responseBody = JSON.parse(callOptions.body);
-			expect(responseBody.favoriteId).toEqual('1');
+			expect(responseBody.favoriteId).toEqual('10');
 			expect(responseBody.playModes.shuffle).toEqual(true);
 			expect(responseBody.playModes.repeat).toEqual(true);
 			expect(responseBody.playModes.crossfade).toEqual(true);
@@ -256,7 +276,7 @@ describe('Sonos Node', () => {
 
 			const result = await node.execute.apply(executeStub);
 			const executionResponse = result[0][0] as any;
-			expect(executionResponse?.json[0].message).toEqual('ok');
+			expect(executionResponse?.json.message).toEqual('ok');
 		});
 
 		it('Loads Home Theater Playback', async () => {
@@ -269,7 +289,7 @@ describe('Sonos Node', () => {
 
 			const result = await node.execute.apply(executeStub);
 			const executionResponse = result[0][0] as any;
-			expect(executionResponse?.json[0].message).toEqual('ok');
+			expect(executionResponse?.json.message).toEqual('ok');
 		});
 
 		it('Sets TV Power State', async () => {
@@ -282,7 +302,263 @@ describe('Sonos Node', () => {
 
 			const result = await node.execute.apply(executeStub);
 			const executionResponse = result[0][0] as any;
-			expect(executionResponse?.json[0].message).toEqual('ok');
+			expect(executionResponse?.json.message).toEqual('ok');
+		});
+	});
+	describe('Targets by group', () => {
+		type Call = { method: string; uri: string; body?: any };
+		let calls: Call[];
+		let groupsFixture: string;
+
+		beforeEach(async () => {
+			calls = [];
+			groupsFixture = './test/Sonos/multiGroups.response.json';
+			nodeParameters['household'] = 'HOUSEHOLD_1';
+			const fakeSonos = (...args: any[]) => {
+				const options = args[1];
+				calls.push({
+					method: options.method,
+					uri: options.uri,
+					body: options.body ? JSON.parse(options.body) : undefined,
+				});
+				if (options.method === 'GET' && options.uri.endsWith('/groups')) {
+					return readFileAsync(groupsFixture, 'utf-8');
+				}
+				if (options.method === 'GET' && options.uri.endsWith('/favorites')) {
+					return readFileAsync('./test/Sonos/favorites.response.json', 'utf-8');
+				}
+				if (options.method === 'GET' && options.uri.endsWith('/playlists')) {
+					return readFileAsync('./test/Sonos/playlists.response.json', 'utf-8');
+				}
+				return Promise.resolve('{}');
+			};
+			executeStub.helpers.requestOAuth2 = jest.fn().mockImplementation(fakeSonos);
+			optionsStub.helpers.requestOAuth2 = jest.fn().mockImplementation(fakeSonos);
+		});
+
+		const commands = () => calls.filter((call) => call.method === 'POST');
+		const api = (path: string) => 'https://api.ws.sonos.com/control/api/v1/' + path;
+
+		it('Lists groups with their coordinator as value', async () => {
+			const result = await loadGroups.call(optionsStub);
+
+			expect(result.map((option) => option.name)).toEqual([
+				'Kitchen',
+				'Living Room + 1',
+				'Office',
+			]);
+			expect(result[1].value).toEqual('RINCON_LIVING');
+			expect(result[1].description).toEqual('Living Room, Dining Room');
+		});
+
+		it('Lists Sonos playlists', async () => {
+			const result = await loadPlaylists.call(optionsStub);
+
+			expect(result).toEqual([
+				{ name: 'Morning Mix', value: '0' },
+				{ name: 'Evening Mix', value: '1' },
+			]);
+		});
+
+		it('Resolves a group from a player id, a player name or a group name', async () => {
+			const topology = await getTopology.call(executeStub, 'HOUSEHOLD_1');
+
+			expect(resolveGroup(topology, 'RINCON_LIVING').id).toEqual('RINCON_LIVING:20');
+			expect(resolveGroup(topology, 'RINCON_DINING').id).toEqual('RINCON_LIVING:20');
+			expect(resolveGroup(topology, 'dining room').id).toEqual('RINCON_LIVING:20');
+			expect(resolveGroup(topology, 'Living Room + 1').id).toEqual('RINCON_LIVING:20');
+			expect(resolveGroup(topology, 'Office').id).toEqual('RINCON_OFFICE:30');
+			expect(resolveGroup(topology, '').id).toEqual('RINCON_KITCHEN:10');
+			expect(() => resolveGroup(topology, 'Vestiaire')).toThrow('Vestiaire');
+		});
+
+		it('Pauses the selected group', async () => {
+			nodeParameters['action'] = 'pause';
+			nodeParameters['target'] = 'RINCON_OFFICE';
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(commands()).toEqual([
+				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/playback/pause'), body: undefined },
+			]);
+			expect(result[0][0].json).toMatchObject({
+				message: 'ok',
+				action: 'pause',
+				groupName: 'Office',
+				members: ['Office'],
+			});
+		});
+
+		it('Sets the volume before playing a favorite chosen by name', async () => {
+			nodeParameters['action'] = 'playFavorite';
+			nodeParameters['target'] = 'Living Room';
+			nodeParameters['favorite'] = '10hz bass test';
+			nodeParameters['setVolume'] = true;
+			nodeParameters['volume'] = '32';
+			nodeParameters['shuffle'] = true;
+			nodeParameters['repeat'] = true;
+			nodeParameters['crossfade'] = false;
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(commands().map((call) => call.uri)).toEqual([
+				api('groups/RINCON_LIVING:20/groupVolume'),
+				api('groups/RINCON_LIVING:20/favorites'),
+			]);
+			expect(commands()[0].body).toEqual({ volume: 32 });
+			expect(commands()[1].body.favoriteId).toEqual('41');
+			expect(result[0][0].json).toMatchObject({
+				groupName: 'Living Room + 1',
+				members: ['Living Room', 'Dining Room'],
+				favorite: '10Hz Bass Test',
+				volume: 32,
+			});
+		});
+
+		it('Plays a favorite without touching the volume when not asked', async () => {
+			nodeParameters['action'] = 'playFavorite';
+			nodeParameters['target'] = 'RINCON_KITCHEN';
+			nodeParameters['favorite'] = '10';
+
+			await node.execute.apply(executeStub);
+
+			expect(commands().map((call) => call.uri)).toEqual([
+				api('groups/RINCON_KITCHEN:10/favorites'),
+			]);
+		});
+
+		it('Plays a Sonos playlist chosen by name', async () => {
+			nodeParameters['action'] = 'playPlaylist';
+			nodeParameters['target'] = 'Office';
+			nodeParameters['playlist'] = 'Evening Mix';
+			nodeParameters['setVolume'] = true;
+			nodeParameters['volume'] = 32;
+
+			await node.execute.apply(executeStub);
+
+			expect(commands().map((call) => call.uri)).toEqual([
+				api('groups/RINCON_OFFICE:30/groupVolume'),
+				api('groups/RINCON_OFFICE:30/playlists'),
+			]);
+			expect(commands()[1].body).toMatchObject({ playlistId: '1', playOnCompletion: true });
+		});
+
+		it('Starts the music with a volume', async () => {
+			nodeParameters['action'] = 'play';
+			nodeParameters['target'] = 'RINCON_KITCHEN';
+			nodeParameters['setVolume'] = true;
+			nodeParameters['volume'] = 14;
+
+			await node.execute.apply(executeStub);
+
+			expect(commands().map((call) => call.uri)).toEqual([
+				api('groups/RINCON_KITCHEN:10/groupVolume'),
+				api('groups/RINCON_KITCHEN:10/playback/play'),
+			]);
+		});
+
+		it('Rejects an invalid volume', async () => {
+			nodeParameters['action'] = 'groupVolume';
+			nodeParameters['target'] = 'Office';
+			nodeParameters['volume'] = 'fort';
+
+			await expect(node.execute.apply(executeStub)).rejects.toThrow('Invalid volume');
+			expect(commands()).toEqual([]);
+		});
+
+		it('Plays an audio clip on every player of the selected groups', async () => {
+			nodeParameters['action'] = 'playAudioClip';
+			nodeParameters['targets'] = ['RINCON_KITCHEN', 'RINCON_LIVING', 'RINCON_OFFICE'];
+			nodeParameters['url'] = 'https://n8n.example.com/webhook/doorbell.mp3';
+			nodeParameters['volume'] = 50;
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(commands().map((call) => call.uri)).toEqual([
+				api('players/RINCON_KITCHEN/audioClip'),
+				api('players/RINCON_LIVING/audioClip'),
+				api('players/RINCON_DINING/audioClip'),
+				api('players/RINCON_OFFICE/audioClip'),
+			]);
+			expect(commands()[0].body).toMatchObject({
+				streamUrl: 'https://n8n.example.com/webhook/doorbell.mp3',
+				volume: 50,
+			});
+			expect(result[0][0].json.players).toEqual([
+				'Kitchen',
+				'Living Room',
+				'Dining Room',
+				'Office',
+			]);
+		});
+
+		it('Accepts a comma separated list of names for the audio clip', async () => {
+			nodeParameters['action'] = 'playAudioClip';
+			nodeParameters['targets'] = 'Dining Room, Living Room';
+			nodeParameters['url'] = 'https://n8n.example.com/clip.mp3';
+			nodeParameters['volume'] = 50;
+
+			await node.execute.apply(executeStub);
+
+			expect(commands().map((call) => call.uri)).toEqual([
+				api('players/RINCON_LIVING/audioClip'),
+				api('players/RINCON_DINING/audioClip'),
+			]);
+		});
+
+		it('Does nothing when the players are already grouped', async () => {
+			nodeParameters['action'] = 'groupPlayers';
+			nodeParameters['members'] = ['RINCON_DINING', 'RINCON_LIVING'];
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(commands()).toEqual([]);
+			expect(result[0][0].json).toMatchObject({ changed: false, groupName: 'Living Room + 1' });
+		});
+
+		it('Regroups the players when the group is not right', async () => {
+			nodeParameters['action'] = 'groupPlayers';
+			nodeParameters['members'] = 'Living Room, Dining Room, Office';
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(commands()).toEqual([
+				{
+					method: 'POST',
+					uri: api('households/HOUSEHOLD_1/groups/createGroup'),
+					body: {
+						playerIds: ['RINCON_LIVING', 'RINCON_DINING', 'RINCON_OFFICE'],
+						musicContextGroupId: 'RINCON_LIVING:20',
+					},
+				},
+			]);
+			expect(result[0][0].json).toMatchObject({ changed: true });
+		});
+
+		it('Processes every incoming item', async () => {
+			const rows = [
+				{ room: 'Kitchen', volume: 14 },
+				{ room: 'Living Room', volume: 20 },
+				{ room: 'Office', volume: 20 },
+			];
+			inputItems = rows.map((row) => ({ json: row }));
+			nodeParameters['action'] = 'groupVolume';
+			nodeParameters['target'] = ((i: number) => rows[i].room) as any;
+			nodeParameters['volume'] = ((i: number) => rows[i].volume) as any;
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(result[0].length).toEqual(3);
+			expect(commands()).toEqual([
+				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 14 } },
+				{ method: 'POST', uri: api('groups/RINCON_LIVING:20/groupVolume'), body: { volume: 20 } },
+				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/groupVolume'), body: { volume: 20 } },
+			]);
+			expect(result[0].map((item) => item.pairedItem)).toEqual([
+				{ item: 0 },
+				{ item: 1 },
+				{ item: 2 },
+			]);
 		});
 	});
 });
