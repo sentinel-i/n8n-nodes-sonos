@@ -293,6 +293,24 @@ export class Sonos implements INodeType {
 				},
 			},
 			{
+				displayName: 'Fade Out Duration',
+				name: 'fadeDuration',
+				type: 'number' as NodePropertyTypes,
+				default: 0,
+				description:
+					'Seconds during which the volume is lowered before pausing (0 = pause immediately). The original volume is restored once paused.',
+				typeOptions: {
+					minValue: 0,
+					maxValue: 300,
+					numberStepSize: 1,
+				},
+				displayOptions: {
+					show: {
+						action: ['pause'],
+					},
+				},
+			},
+			{
 				displayName: 'Set Volume',
 				name: 'setVolume',
 				type: 'boolean' as NodePropertyTypes,

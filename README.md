@@ -25,6 +25,7 @@ Afterwards you should be able to create workflows using the Sonos node.
 
 Currently supported features:
 * Play / Pause / Toggle Play/Pause / Skip Song / Previous Song on a selected group
+* Pause with an optional fade out: the volume is lowered progressively, the music is paused, then the original volume is restored
 * Play Favorite on a selected group (optionally setting the volume first)
 * Play Playlist (Sonos playlists) on a selected group (optionally setting the volume first)
 * Set Group Volume on a selected group
