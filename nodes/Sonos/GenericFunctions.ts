@@ -301,12 +301,65 @@ export async function groupPlayers(this: IExecuteFunctions, itemIndex: number): 
 	};
 }
 
+export const timing = {
+	sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+};
+
+const FADE_STEP_SECONDS = 2;
+const MAX_FADE_SECONDS = 300;
+
+export function parseFadeDuration(value: unknown): number {
+	const seconds = Number(value ?? 0);
+	if (isNaN(seconds) || seconds < 0 || seconds > MAX_FADE_SECONDS) {
+		throw new Error(
+			`Invalid fade duration "${value}", expected a number of seconds between 0 and ${MAX_FADE_SECONDS}`,
+		);
+	}
+	return seconds;
+}
+
+/**
+ * Lowers the group volume step by step down to 0, pauses, then restores the
+ * original volume so the next playback starts at the usual level.
+ * Returns the restored volume, or undefined when no fade was done.
+ */
+async function fadeOutAndPause(
+	this: IExecuteFunctions,
+	group: SonosGroup,
+	fadeSeconds: number,
+): Promise<number | undefined> {
+	const isPlaying =
+		group.playbackState === 'PLAYBACK_STATE_PLAYING' ||
+		group.playbackState === 'PLAYBACK_STATE_BUFFERING';
+	if (fadeSeconds <= 0 || !isPlaying) {
+		await callSonosApi.call(this, 'POST', `groups/${group.id}/playback/pause`);
+		return undefined;
+	}
+
+	const current = await callSonosApi.call(this, 'GET', `groups/${group.id}/groupVolume`);
+	const startVolume = Number(current.volume ?? 0);
+	const steps = Math.max(1, Math.round(fadeSeconds / FADE_STEP_SECONDS));
+	for (let step = 1; step <= steps; step++) {
+		await timing.sleep((fadeSeconds * 1000) / steps);
+		const volume = Math.round(startVolume * (1 - step / steps));
+		await callSonosApi.call(this, 'POST', `groups/${group.id}/groupVolume`, { volume });
+	}
+	await callSonosApi.call(this, 'POST', `groups/${group.id}/playback/pause`);
+	await callSonosApi.call(this, 'POST', `groups/${group.id}/groupVolume`, { volume: startVolume });
+	return startVolume;
+}
+
 export async function executeGroupAction(
 	this: IExecuteFunctions,
 	action: string,
 	itemIndex: number,
 ): Promise<IDataObject> {
 	const { topology, group } = await getGroupForItem.call(this, itemIndex);
+	if (action === 'pause') {
+		const fadeDuration = parseFadeDuration(this.getNodeParameter('fadeDuration', itemIndex, 0));
+		const restoredVolume = await fadeOutAndPause.call(this, group, fadeDuration);
+		return { ...describeGroup(topology, group), fadeDuration, restoredVolume };
+	}
 	const volume =
 		action === 'play' ? await applyOptionalVolume.call(this, itemIndex, group.id) : undefined;
 	await callSonosApi.call(this, 'POST', `groups/${group.id}/playback/${action}`);

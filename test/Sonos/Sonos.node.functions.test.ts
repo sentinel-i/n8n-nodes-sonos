@@ -9,6 +9,7 @@ import {
 	loadPlaylists,
 	resolveGroup,
 	getTopology,
+	timing,
 } from '../../nodes/Sonos/GenericFunctions';
 import { readFile } from 'fs';
 import { OptionsWithUrl, RequestPromiseOptions } from 'request-promise-native';
@@ -327,6 +328,9 @@ describe('Sonos Node', () => {
 				if (options.method === 'GET' && options.uri.endsWith('/favorites')) {
 					return readFileAsync('./test/Sonos/favorites.response.json', 'utf-8');
 				}
+				if (options.method === 'GET' && options.uri.endsWith('/groupVolume')) {
+					return Promise.resolve(JSON.stringify({ volume: 30, muted: false, fixed: false }));
+				}
 				if (options.method === 'GET' && options.uri.endsWith('/playlists')) {
 					return readFileAsync('./test/Sonos/playlists.response.json', 'utf-8');
 				}
@@ -387,6 +391,51 @@ describe('Sonos Node', () => {
 				groupName: 'Office',
 				members: ['Office'],
 			});
+		});
+
+		it('Fades out, pauses, then restores the volume', async () => {
+			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
+			nodeParameters['action'] = 'pause';
+			nodeParameters['target'] = 'Kitchen';
+			nodeParameters['fadeDuration'] = 6;
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(sleep).toHaveBeenCalledTimes(3);
+			expect(sleep).toHaveBeenCalledWith(2000);
+			expect(commands()).toEqual([
+				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 20 } },
+				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 10 } },
+				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 0 } },
+				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/playback/pause'), body: undefined },
+				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 30 } },
+			]);
+			expect(result[0][0].json).toMatchObject({ fadeDuration: 6, restoredVolume: 30 });
+			sleep.mockRestore();
+		});
+
+		it('Pauses without fading when the group is not playing', async () => {
+			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
+			nodeParameters['action'] = 'pause';
+			nodeParameters['target'] = 'Office';
+			nodeParameters['fadeDuration'] = 30;
+
+			await node.execute.apply(executeStub);
+
+			expect(sleep).not.toHaveBeenCalled();
+			expect(commands()).toEqual([
+				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/playback/pause'), body: undefined },
+			]);
+			sleep.mockRestore();
+		});
+
+		it('Rejects an invalid fade duration', async () => {
+			nodeParameters['action'] = 'pause';
+			nodeParameters['target'] = 'Kitchen';
+			nodeParameters['fadeDuration'] = 900;
+
+			await expect(node.execute.apply(executeStub)).rejects.toThrow('Invalid fade duration');
+			expect(commands()).toEqual([]);
 		});
 
 		it('Sets the volume before playing a favorite chosen by name', async () => {
