@@ -29,7 +29,7 @@ Currently supported features:
 * Play Favorite on a selected group (optionally setting the volume first)
 * Play Playlist (Sonos playlists) on a selected group (optionally setting the volume first)
 * Set Group Volume on a selected group, optionally changing it progressively (fade)
-* Transition option on Play Favorite / Play Playlist: the current music fades out, the new one fades in
+* Fade Duration on Play Favorite / Play Playlist: when switching content, the current music fades out, the new one fades in
 * Group Players: makes sure the selected players form one group (adds and removes players if needed)
 * Group all players
 * Play Audio Clip from a URL on every player of one or several groups (the music is lowered during the clip, then resumes)

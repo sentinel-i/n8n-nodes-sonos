@@ -391,7 +391,7 @@ async function loadContent(
 	path: string,
 	body: IDataObject,
 ): Promise<number | undefined> {
-	const transition = parseFadeDuration(this.getNodeParameter('transitionDuration', itemIndex, 0));
+	const transition = parseFadeDuration(this.getNodeParameter('fadeDuration', itemIndex, 0));
 	if (transition <= 0) {
 		const volume = await applyOptionalVolume.call(this, itemIndex, group.id);
 		await callSonosApi.call(this, 'POST', path, body);

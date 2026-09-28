@@ -293,7 +293,7 @@ export class Sonos implements INodeType {
 				},
 			},
 			{
-				displayName: 'Fade Out Duration',
+				displayName: 'Fade Duration',
 				name: 'fadeDuration',
 				type: 'number' as NodePropertyTypes,
 				default: 0,
@@ -329,8 +329,8 @@ export class Sonos implements INodeType {
 				},
 			},
 			{
-				displayName: 'Transition Duration',
-				name: 'transitionDuration',
+				displayName: 'Fade Duration',
+				name: 'fadeDuration',
 				type: 'number' as NodePropertyTypes,
 				default: 0,
 				description:

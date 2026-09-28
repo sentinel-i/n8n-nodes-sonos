@@ -443,7 +443,7 @@ describe('Sonos Node', () => {
 			nodeParameters['action'] = 'playFavorite';
 			nodeParameters['target'] = 'Kitchen';
 			nodeParameters['favorite'] = '41';
-			nodeParameters['transitionDuration'] = 4;
+			nodeParameters['fadeDuration'] = 4;
 			nodeParameters['setVolume'] = true;
 			nodeParameters['volume'] = 20;
 
@@ -466,7 +466,7 @@ describe('Sonos Node', () => {
 			nodeParameters['action'] = 'playPlaylist';
 			nodeParameters['target'] = 'Office';
 			nodeParameters['playlist'] = 'Morning Mix';
-			nodeParameters['transitionDuration'] = 4;
+			nodeParameters['fadeDuration'] = 4;
 			nodeParameters['setVolume'] = true;
 			nodeParameters['volume'] = 20;
 
@@ -486,7 +486,7 @@ describe('Sonos Node', () => {
 			nodeParameters['action'] = 'playFavorite';
 			nodeParameters['target'] = 'Kitchen';
 			nodeParameters['favorite'] = '10';
-			nodeParameters['transitionDuration'] = 2;
+			nodeParameters['fadeDuration'] = 2;
 
 			const result = await node.execute.apply(executeStub);
 
