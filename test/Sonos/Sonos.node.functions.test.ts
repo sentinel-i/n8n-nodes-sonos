@@ -438,6 +438,85 @@ describe('Sonos Node', () => {
 			expect(commands()).toEqual([]);
 		});
 
+		it('Switches favorites with a fade out / fade in transition', async () => {
+			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
+			nodeParameters['action'] = 'playFavorite';
+			nodeParameters['target'] = 'Kitchen';
+			nodeParameters['favorite'] = '41';
+			nodeParameters['transitionDuration'] = 4;
+			nodeParameters['setVolume'] = true;
+			nodeParameters['volume'] = 20;
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(sleep).toHaveBeenCalledTimes(4);
+			expect(commands().map((call) => [call.uri, call.body?.volume ?? call.body?.favoriteId])).toEqual([
+				[api('groups/RINCON_KITCHEN:10/groupVolume'), 15],
+				[api('groups/RINCON_KITCHEN:10/groupVolume'), 0],
+				[api('groups/RINCON_KITCHEN:10/favorites'), '41'],
+				[api('groups/RINCON_KITCHEN:10/groupVolume'), 10],
+				[api('groups/RINCON_KITCHEN:10/groupVolume'), 20],
+			]);
+			expect(result[0][0].json).toMatchObject({ favorite: '10Hz Bass Test', volume: 20 });
+			sleep.mockRestore();
+		});
+
+		it('Starts silent then fades in when the group was not playing', async () => {
+			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
+			nodeParameters['action'] = 'playPlaylist';
+			nodeParameters['target'] = 'Office';
+			nodeParameters['playlist'] = 'Morning Mix';
+			nodeParameters['transitionDuration'] = 4;
+			nodeParameters['setVolume'] = true;
+			nodeParameters['volume'] = 20;
+
+			await node.execute.apply(executeStub);
+
+			expect(commands().map((call) => [call.uri, call.body?.volume ?? call.body?.playlistId])).toEqual([
+				[api('groups/RINCON_OFFICE:30/groupVolume'), 0],
+				[api('groups/RINCON_OFFICE:30/playlists'), '0'],
+				[api('groups/RINCON_OFFICE:30/groupVolume'), 10],
+				[api('groups/RINCON_OFFICE:30/groupVolume'), 20],
+			]);
+			sleep.mockRestore();
+		});
+
+		it('Fades back to the current volume when no volume is set', async () => {
+			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
+			nodeParameters['action'] = 'playFavorite';
+			nodeParameters['target'] = 'Kitchen';
+			nodeParameters['favorite'] = '10';
+			nodeParameters['transitionDuration'] = 2;
+
+			const result = await node.execute.apply(executeStub);
+
+			expect(commands().map((call) => [call.uri, call.body?.volume ?? call.body?.favoriteId])).toEqual([
+				[api('groups/RINCON_KITCHEN:10/groupVolume'), 0],
+				[api('groups/RINCON_KITCHEN:10/favorites'), '10'],
+				[api('groups/RINCON_KITCHEN:10/groupVolume'), 30],
+			]);
+			expect(result[0][0].json.volume).toEqual(30);
+			sleep.mockRestore();
+		});
+
+		it('Changes the group volume progressively', async () => {
+			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
+			nodeParameters['action'] = 'groupVolume';
+			nodeParameters['target'] = 'Office';
+			nodeParameters['volume'] = 0;
+			nodeParameters['fadeDuration'] = 6;
+
+			await node.execute.apply(executeStub);
+
+			expect(sleep).toHaveBeenCalledWith(2000);
+			expect(commands()).toEqual([
+				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/groupVolume'), body: { volume: 20 } },
+				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/groupVolume'), body: { volume: 10 } },
+				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/groupVolume'), body: { volume: 0 } },
+			]);
+			sleep.mockRestore();
+		});
+
 		it('Sets the volume before playing a favorite chosen by name', async () => {
 			nodeParameters['action'] = 'playFavorite';
 			nodeParameters['target'] = 'Living Room';

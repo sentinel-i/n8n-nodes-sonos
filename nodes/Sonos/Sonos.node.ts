@@ -311,6 +311,42 @@ export class Sonos implements INodeType {
 				},
 			},
 			{
+				displayName: 'Fade Duration',
+				name: 'fadeDuration',
+				type: 'number' as NodePropertyTypes,
+				default: 0,
+				description:
+					'Seconds during which the volume changes progressively to the new value (0 = immediate)',
+				typeOptions: {
+					minValue: 0,
+					maxValue: 300,
+					numberStepSize: 1,
+				},
+				displayOptions: {
+					show: {
+						action: ['groupVolume'],
+					},
+				},
+			},
+			{
+				displayName: 'Transition Duration',
+				name: 'transitionDuration',
+				type: 'number' as NodePropertyTypes,
+				default: 0,
+				description:
+					'Seconds of fade out of the current music, then fade in of the new one (0 = immediate switch). The fade in goes up to the Volume below when Set Volume is on, otherwise to the current volume.',
+				typeOptions: {
+					minValue: 0,
+					maxValue: 300,
+					numberStepSize: 1,
+				},
+				displayOptions: {
+					show: {
+						action: ['playFavorite', 'playPlaylist'],
+					},
+				},
+			},
+			{
 				displayName: 'Set Volume',
 				name: 'setVolume',
 				type: 'boolean' as NodePropertyTypes,
