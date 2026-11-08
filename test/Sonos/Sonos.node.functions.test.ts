@@ -220,9 +220,10 @@ describe('Sonos Node', () => {
 			const executionResponse = result[0][0] as any;
 			expect(executionResponse?.json.message).toEqual('ok');
 
+			// The volume is set on each player of the first group (last one checked here)
 			expect(callOptions.body).toEqual(JSON.stringify({ volume: 50 }));
 			expect(callOptions.uri).toEqual(
-				'https://api.ws.sonos.com/control/api/v1/groups/RINCON_1234567:1234/groupVolume',
+				'https://api.ws.sonos.com/control/api/v1/players/RINCON_1234567_1/playerVolume',
 			);
 		});
 
@@ -306,33 +307,49 @@ describe('Sonos Node', () => {
 			expect(executionResponse?.json.message).toEqual('ok');
 		});
 	});
-	describe('Targets by group', () => {
+	describe('Players and volumes', () => {
 		type Call = { method: string; uri: string; body?: any };
 		let calls: Call[];
-		let groupsFixture: string;
+		let sleep: jest.SpyInstance;
+		const playerVolumes: Record<string, number> = {
+			RINCON_KITCHEN: 30,
+			RINCON_LIVING: 30,
+			RINCON_DINING: 20,
+			RINCON_OFFICE: 30,
+		};
 
 		beforeEach(async () => {
 			calls = [];
-			groupsFixture = './test/Sonos/multiGroups.response.json';
 			nodeParameters['household'] = 'HOUSEHOLD_1';
+			sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
 			const fakeSonos = (...args: any[]) => {
 				const options = args[1];
-				calls.push({
-					method: options.method,
-					uri: options.uri,
-					body: options.body ? JSON.parse(options.body) : undefined,
-				});
+				const body = options.body ? JSON.parse(options.body) : undefined;
+				calls.push({ method: options.method, uri: options.uri, body });
 				if (options.method === 'GET' && options.uri.endsWith('/groups')) {
-					return readFileAsync(groupsFixture, 'utf-8');
+					return readFileAsync('./test/Sonos/multiGroups.response.json', 'utf-8');
 				}
 				if (options.method === 'GET' && options.uri.endsWith('/favorites')) {
 					return readFileAsync('./test/Sonos/favorites.response.json', 'utf-8');
 				}
-				if (options.method === 'GET' && options.uri.endsWith('/groupVolume')) {
-					return Promise.resolve(JSON.stringify({ volume: 30, muted: false, fixed: false }));
-				}
 				if (options.method === 'GET' && options.uri.endsWith('/playlists')) {
 					return readFileAsync('./test/Sonos/playlists.response.json', 'utf-8');
+				}
+				if (options.method === 'GET' && options.uri.endsWith('/playerVolume')) {
+					const playerId = options.uri.split('/players/')[1].split('/')[0];
+					return Promise.resolve(JSON.stringify({ volume: playerVolumes[playerId] }));
+				}
+				if (options.uri.endsWith('/createGroup')) {
+					return Promise.resolve(
+						JSON.stringify({
+							group: {
+								id: 'NEW_GROUP:99',
+								name: 'New group',
+								coordinatorId: body.playerIds[0],
+								playerIds: body.playerIds,
+							},
+						}),
+					);
 				}
 				return Promise.resolve('{}');
 			};
@@ -340,347 +357,460 @@ describe('Sonos Node', () => {
 			optionsStub.helpers.requestOAuth2 = jest.fn().mockImplementation(fakeSonos);
 		});
 
+		afterEach(() => sleep.mockRestore());
+
 		const commands = () => calls.filter((call) => call.method === 'POST');
 		const api = (path: string) => 'https://api.ws.sonos.com/control/api/v1/' + path;
+		const volumeCalls = () =>
+			commands()
+				.filter((call) => call.uri.endsWith('/playerVolume'))
+				.map((call) => [call.uri.split('/players/')[1].split('/')[0], call.body.volume]);
 
-		it('Lists groups with their coordinator as value', async () => {
-			const result = await loadGroups.call(optionsStub);
+		describe('Configuration', () => {
+			it('Lists groups with their coordinator as value', async () => {
+				const result = await loadGroups.call(optionsStub);
 
-			expect(result.map((option) => option.name)).toEqual([
-				'Kitchen',
-				'Living Room + 1',
-				'Office',
-			]);
-			expect(result[1].value).toEqual('RINCON_LIVING');
-			expect(result[1].description).toEqual('Living Room, Dining Room');
-		});
+				expect(result.map((option) => option.name)).toEqual([
+					'Kitchen',
+					'Living Room + 1',
+					'Office',
+				]);
+				expect(result[1].value).toEqual('RINCON_LIVING');
+				expect(result[1].description).toEqual('Living Room, Dining Room');
+			});
 
-		it('Lists Sonos playlists', async () => {
-			const result = await loadPlaylists.call(optionsStub);
+			it('Lists Sonos playlists', async () => {
+				const result = await loadPlaylists.call(optionsStub);
 
-			expect(result).toEqual([
-				{ name: 'Morning Mix', value: '0' },
-				{ name: 'Evening Mix', value: '1' },
-			]);
-		});
+				expect(result).toEqual([
+					{ name: 'Morning Mix', value: '0' },
+					{ name: 'Evening Mix', value: '1' },
+				]);
+			});
 
-		it('Resolves a group from a player id, a player name or a group name', async () => {
-			const topology = await getTopology.call(executeStub, 'HOUSEHOLD_1');
+			it('Resolves a group from a player id, a player name or a group name', async () => {
+				const topology = await getTopology.call(executeStub, 'HOUSEHOLD_1');
 
-			expect(resolveGroup(topology, 'RINCON_LIVING').id).toEqual('RINCON_LIVING:20');
-			expect(resolveGroup(topology, 'RINCON_DINING').id).toEqual('RINCON_LIVING:20');
-			expect(resolveGroup(topology, 'dining room').id).toEqual('RINCON_LIVING:20');
-			expect(resolveGroup(topology, 'Living Room + 1').id).toEqual('RINCON_LIVING:20');
-			expect(resolveGroup(topology, 'Office').id).toEqual('RINCON_OFFICE:30');
-			expect(resolveGroup(topology, '').id).toEqual('RINCON_KITCHEN:10');
-			expect(() => resolveGroup(topology, 'Vestiaire')).toThrow('Vestiaire');
-		});
-
-		it('Pauses the selected group', async () => {
-			nodeParameters['action'] = 'pause';
-			nodeParameters['target'] = 'RINCON_OFFICE';
-
-			const result = await node.execute.apply(executeStub);
-
-			expect(commands()).toEqual([
-				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/playback/pause'), body: undefined },
-			]);
-			expect(result[0][0].json).toMatchObject({
-				message: 'ok',
-				action: 'pause',
-				groupName: 'Office',
-				members: ['Office'],
+				expect(resolveGroup(topology, 'RINCON_LIVING').id).toEqual('RINCON_LIVING:20');
+				expect(resolveGroup(topology, 'dining room').id).toEqual('RINCON_LIVING:20');
+				expect(resolveGroup(topology, 'Living Room + 1').id).toEqual('RINCON_LIVING:20');
+				expect(resolveGroup(topology, '').id).toEqual('RINCON_KITCHEN:10');
+				expect(() => resolveGroup(topology, 'Garage')).toThrow('Garage');
 			});
 		});
 
-		it('Fades out, pauses, then restores the volume', async () => {
-			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
-			nodeParameters['action'] = 'pause';
-			nodeParameters['target'] = 'Kitchen';
-			nodeParameters['fadeDuration'] = 6;
+		describe('Grouping', () => {
+			it('Acts directly when the players already form their own group', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['players'] = 'Office';
 
-			const result = await node.execute.apply(executeStub);
+				const result = await node.execute.apply(executeStub);
 
-			expect(sleep).toHaveBeenCalledTimes(3);
-			expect(sleep).toHaveBeenCalledWith(2000);
-			expect(commands()).toEqual([
-				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 20 } },
-				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 10 } },
-				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 0 } },
-				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/playback/pause'), body: undefined },
-				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 30 } },
-			]);
-			expect(result[0][0].json).toMatchObject({ fadeDuration: 6, restoredVolume: 30 });
-			sleep.mockRestore();
-		});
-
-		it('Pauses without fading when the group is not playing', async () => {
-			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
-			nodeParameters['action'] = 'pause';
-			nodeParameters['target'] = 'Office';
-			nodeParameters['fadeDuration'] = 30;
-
-			await node.execute.apply(executeStub);
-
-			expect(sleep).not.toHaveBeenCalled();
-			expect(commands()).toEqual([
-				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/playback/pause'), body: undefined },
-			]);
-			sleep.mockRestore();
-		});
-
-		it('Rejects an invalid fade duration', async () => {
-			nodeParameters['action'] = 'pause';
-			nodeParameters['target'] = 'Kitchen';
-			nodeParameters['fadeDuration'] = 900;
-
-			await expect(node.execute.apply(executeStub)).rejects.toThrow('Invalid fade duration');
-			expect(commands()).toEqual([]);
-		});
-
-		it('Switches favorites with a fade out / fade in transition', async () => {
-			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
-			nodeParameters['action'] = 'playFavorite';
-			nodeParameters['target'] = 'Kitchen';
-			nodeParameters['favorite'] = '41';
-			nodeParameters['fadeDuration'] = 4;
-			nodeParameters['setVolume'] = true;
-			nodeParameters['volume'] = 20;
-
-			const result = await node.execute.apply(executeStub);
-
-			expect(sleep).toHaveBeenCalledTimes(4);
-			expect(commands().map((call) => [call.uri, call.body?.volume ?? call.body?.favoriteId])).toEqual([
-				[api('groups/RINCON_KITCHEN:10/groupVolume'), 15],
-				[api('groups/RINCON_KITCHEN:10/groupVolume'), 0],
-				[api('groups/RINCON_KITCHEN:10/favorites'), '41'],
-				[api('groups/RINCON_KITCHEN:10/groupVolume'), 10],
-				[api('groups/RINCON_KITCHEN:10/groupVolume'), 20],
-			]);
-			expect(result[0][0].json).toMatchObject({ favorite: '10Hz Bass Test', volume: 20 });
-			sleep.mockRestore();
-		});
-
-		it('Starts silent then fades in when the group was not playing', async () => {
-			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
-			nodeParameters['action'] = 'playPlaylist';
-			nodeParameters['target'] = 'Office';
-			nodeParameters['playlist'] = 'Morning Mix';
-			nodeParameters['fadeDuration'] = 4;
-			nodeParameters['setVolume'] = true;
-			nodeParameters['volume'] = 20;
-
-			await node.execute.apply(executeStub);
-
-			expect(commands().map((call) => [call.uri, call.body?.volume ?? call.body?.playlistId])).toEqual([
-				[api('groups/RINCON_OFFICE:30/groupVolume'), 0],
-				[api('groups/RINCON_OFFICE:30/playlists'), '0'],
-				[api('groups/RINCON_OFFICE:30/groupVolume'), 10],
-				[api('groups/RINCON_OFFICE:30/groupVolume'), 20],
-			]);
-			sleep.mockRestore();
-		});
-
-		it('Fades back to the current volume when no volume is set', async () => {
-			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
-			nodeParameters['action'] = 'playFavorite';
-			nodeParameters['target'] = 'Kitchen';
-			nodeParameters['favorite'] = '10';
-			nodeParameters['fadeDuration'] = 2;
-
-			const result = await node.execute.apply(executeStub);
-
-			expect(commands().map((call) => [call.uri, call.body?.volume ?? call.body?.favoriteId])).toEqual([
-				[api('groups/RINCON_KITCHEN:10/groupVolume'), 0],
-				[api('groups/RINCON_KITCHEN:10/favorites'), '10'],
-				[api('groups/RINCON_KITCHEN:10/groupVolume'), 30],
-			]);
-			expect(result[0][0].json.volume).toEqual(30);
-			sleep.mockRestore();
-		});
-
-		it('Changes the group volume progressively', async () => {
-			const sleep = jest.spyOn(timing, 'sleep').mockResolvedValue();
-			nodeParameters['action'] = 'groupVolume';
-			nodeParameters['target'] = 'Office';
-			nodeParameters['volume'] = 0;
-			nodeParameters['fadeDuration'] = 6;
-
-			await node.execute.apply(executeStub);
-
-			expect(sleep).toHaveBeenCalledWith(2000);
-			expect(commands()).toEqual([
-				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/groupVolume'), body: { volume: 20 } },
-				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/groupVolume'), body: { volume: 10 } },
-				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/groupVolume'), body: { volume: 0 } },
-			]);
-			sleep.mockRestore();
-		});
-
-		it('Sets the volume before playing a favorite chosen by name', async () => {
-			nodeParameters['action'] = 'playFavorite';
-			nodeParameters['target'] = 'Living Room';
-			nodeParameters['favorite'] = '10hz bass test';
-			nodeParameters['setVolume'] = true;
-			nodeParameters['volume'] = '32';
-			nodeParameters['shuffle'] = true;
-			nodeParameters['repeat'] = true;
-			nodeParameters['crossfade'] = false;
-
-			const result = await node.execute.apply(executeStub);
-
-			expect(commands().map((call) => call.uri)).toEqual([
-				api('groups/RINCON_LIVING:20/groupVolume'),
-				api('groups/RINCON_LIVING:20/favorites'),
-			]);
-			expect(commands()[0].body).toEqual({ volume: 32 });
-			expect(commands()[1].body.favoriteId).toEqual('41');
-			expect(result[0][0].json).toMatchObject({
-				groupName: 'Living Room + 1',
-				members: ['Living Room', 'Dining Room'],
-				favorite: '10Hz Bass Test',
-				volume: 32,
+				expect(commands()).toEqual([
+					{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/playback/pause'), body: undefined },
+				]);
+				expect(result[0][0].json).toMatchObject({
+					groupName: 'Office',
+					members: ['Office'],
+					regrouped: false,
+				});
 			});
-		});
 
-		it('Plays a favorite without touching the volume when not asked', async () => {
-			nodeParameters['action'] = 'playFavorite';
-			nodeParameters['target'] = 'RINCON_KITCHEN';
-			nodeParameters['favorite'] = '10';
+			it('Accepts the players in any order and case', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['players'] = ['dining room', 'RINCON_LIVING'];
 
-			await node.execute.apply(executeStub);
+				await node.execute.apply(executeStub);
 
-			expect(commands().map((call) => call.uri)).toEqual([
-				api('groups/RINCON_KITCHEN:10/favorites'),
-			]);
-		});
-
-		it('Plays a Sonos playlist chosen by name', async () => {
-			nodeParameters['action'] = 'playPlaylist';
-			nodeParameters['target'] = 'Office';
-			nodeParameters['playlist'] = 'Evening Mix';
-			nodeParameters['setVolume'] = true;
-			nodeParameters['volume'] = 32;
-
-			await node.execute.apply(executeStub);
-
-			expect(commands().map((call) => call.uri)).toEqual([
-				api('groups/RINCON_OFFICE:30/groupVolume'),
-				api('groups/RINCON_OFFICE:30/playlists'),
-			]);
-			expect(commands()[1].body).toMatchObject({ playlistId: '1', playOnCompletion: true });
-		});
-
-		it('Starts the music with a volume', async () => {
-			nodeParameters['action'] = 'play';
-			nodeParameters['target'] = 'RINCON_KITCHEN';
-			nodeParameters['setVolume'] = true;
-			nodeParameters['volume'] = 14;
-
-			await node.execute.apply(executeStub);
-
-			expect(commands().map((call) => call.uri)).toEqual([
-				api('groups/RINCON_KITCHEN:10/groupVolume'),
-				api('groups/RINCON_KITCHEN:10/playback/play'),
-			]);
-		});
-
-		it('Rejects an invalid volume', async () => {
-			nodeParameters['action'] = 'groupVolume';
-			nodeParameters['target'] = 'Office';
-			nodeParameters['volume'] = 'fort';
-
-			await expect(node.execute.apply(executeStub)).rejects.toThrow('Invalid volume');
-			expect(commands()).toEqual([]);
-		});
-
-		it('Plays an audio clip on every player of the selected groups', async () => {
-			nodeParameters['action'] = 'playAudioClip';
-			nodeParameters['targets'] = ['RINCON_KITCHEN', 'RINCON_LIVING', 'RINCON_OFFICE'];
-			nodeParameters['url'] = 'https://n8n.example.com/webhook/doorbell.mp3';
-			nodeParameters['volume'] = 50;
-
-			const result = await node.execute.apply(executeStub);
-
-			expect(commands().map((call) => call.uri)).toEqual([
-				api('players/RINCON_KITCHEN/audioClip'),
-				api('players/RINCON_LIVING/audioClip'),
-				api('players/RINCON_DINING/audioClip'),
-				api('players/RINCON_OFFICE/audioClip'),
-			]);
-			expect(commands()[0].body).toMatchObject({
-				streamUrl: 'https://n8n.example.com/webhook/doorbell.mp3',
-				volume: 50,
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('groups/RINCON_LIVING:20/playback/pause'),
+				]);
 			});
-			expect(result[0][0].json.players).toEqual([
-				'Kitchen',
-				'Living Room',
-				'Dining Room',
-				'Office',
-			]);
-		});
 
-		it('Accepts a comma separated list of names for the audio clip', async () => {
-			nodeParameters['action'] = 'playAudioClip';
-			nodeParameters['targets'] = 'Dining Room, Living Room';
-			nodeParameters['url'] = 'https://n8n.example.com/clip.mp3';
-			nodeParameters['volume'] = 50;
+			it('Takes a player out of a group it was added to by mistake', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['players'] = 'Living Room';
 
-			await node.execute.apply(executeStub);
+				const result = await node.execute.apply(executeStub);
 
-			expect(commands().map((call) => call.uri)).toEqual([
-				api('players/RINCON_LIVING/audioClip'),
-				api('players/RINCON_DINING/audioClip'),
-			]);
-		});
+				expect(commands()).toEqual([
+					{
+						method: 'POST',
+						uri: api('households/HOUSEHOLD_1/groups/createGroup'),
+						body: { playerIds: ['RINCON_LIVING'], musicContextGroupId: 'RINCON_LIVING:20' },
+					},
+					{ method: 'POST', uri: api('groups/NEW_GROUP:99/playback/pause'), body: undefined },
+				]);
+				expect(result[0][0].json).toMatchObject({ members: ['Living Room'], regrouped: true });
+			});
 
-		it('Does nothing when the players are already grouped', async () => {
-			nodeParameters['action'] = 'groupPlayers';
-			nodeParameters['members'] = ['RINCON_DINING', 'RINCON_LIVING'];
+			it('Adds the missing players to the group', async () => {
+				nodeParameters['action'] = 'groupVolume';
+				nodeParameters['players'] = 'Living Room, Dining Room, Office';
+				nodeParameters['volume'] = 25;
 
-			const result = await node.execute.apply(executeStub);
+				const result = await node.execute.apply(executeStub);
 
-			expect(commands()).toEqual([]);
-			expect(result[0][0].json).toMatchObject({ changed: false, groupName: 'Living Room + 1' });
-		});
-
-		it('Regroups the players when the group is not right', async () => {
-			nodeParameters['action'] = 'groupPlayers';
-			nodeParameters['members'] = 'Living Room, Dining Room, Office';
-
-			const result = await node.execute.apply(executeStub);
-
-			expect(commands()).toEqual([
-				{
+				expect(commands()[0]).toEqual({
 					method: 'POST',
 					uri: api('households/HOUSEHOLD_1/groups/createGroup'),
 					body: {
 						playerIds: ['RINCON_LIVING', 'RINCON_DINING', 'RINCON_OFFICE'],
 						musicContextGroupId: 'RINCON_LIVING:20',
 					},
-				},
-			]);
-			expect(result[0][0].json).toMatchObject({ changed: true });
+				});
+				expect(result[0][0].json).toMatchObject({
+					members: ['Living Room', 'Dining Room', 'Office'],
+					regrouped: true,
+				});
+			});
+
+			it('Rejects an unknown player', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['players'] = 'Office, Garage';
+
+				await expect(node.execute.apply(executeStub)).rejects.toThrow(
+					'No Sonos player found for "Garage"',
+				);
+				expect(commands()).toEqual([]);
+			});
+
+			it('Keeps the former Group field working, without regrouping', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['target'] = 'RINCON_LIVING';
+
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('groups/RINCON_LIVING:20/playback/pause'),
+				]);
+			});
+
+			it('Keeps the former Group Players action working', async () => {
+				nodeParameters['action'] = 'groupPlayers';
+				nodeParameters['members'] = ['RINCON_DINING', 'RINCON_LIVING'];
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(commands()).toEqual([]);
+				expect(result[0][0].json).toMatchObject({ changed: false, groupName: 'Living Room + 1' });
+			});
+		});
+
+		describe('Volumes', () => {
+			it('Sets one volume per player', async () => {
+				nodeParameters['action'] = 'groupVolume';
+				nodeParameters['players'] = 'Living Room, Dining Room';
+				nodeParameters['volume'] = '32, 18';
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(volumeCalls()).toEqual([
+					['RINCON_LIVING', 32],
+					['RINCON_DINING', 18],
+				]);
+				expect(result[0][0].json.volume).toEqual([32, 18]);
+			});
+
+			it('Applies a single volume to every player', async () => {
+				nodeParameters['action'] = 'groupVolume';
+				nodeParameters['players'] = 'Living Room, Dining Room';
+				nodeParameters['volume'] = 25;
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(volumeCalls()).toEqual([
+					['RINCON_LIVING', 25],
+					['RINCON_DINING', 25],
+				]);
+				expect(result[0][0].json.volume).toEqual(25);
+			});
+
+			it('Rejects a volume list that does not match the players', async () => {
+				nodeParameters['action'] = 'groupVolume';
+				nodeParameters['players'] = 'Living Room, Dining Room';
+				nodeParameters['volume'] = '30, 20, 10';
+
+				await expect(node.execute.apply(executeStub)).rejects.toThrow('2 volumes');
+				expect(volumeCalls()).toEqual([]);
+			});
+
+			it('Rejects an invalid volume', async () => {
+				nodeParameters['action'] = 'groupVolume';
+				nodeParameters['players'] = 'Office';
+				nodeParameters['volume'] = 'fort';
+
+				await expect(node.execute.apply(executeStub)).rejects.toThrow('Invalid volume');
+				expect(commands()).toEqual([]);
+			});
+
+			it('Fades every player at the same time, each to its own volume', async () => {
+				nodeParameters['action'] = 'groupVolume';
+				nodeParameters['players'] = 'Living Room, Dining Room';
+				nodeParameters['volume'] = 0;
+				nodeParameters['fadeDuration'] = 4;
+
+				await node.execute.apply(executeStub);
+
+				expect(sleep).toHaveBeenCalledTimes(2);
+				expect(volumeCalls()).toEqual([
+					['RINCON_LIVING', 15],
+					['RINCON_DINING', 10],
+					['RINCON_LIVING', 0],
+					['RINCON_DINING', 0],
+				]);
+			});
+		});
+
+		describe('Playback', () => {
+			it('Sets the volumes before playing a favorite chosen by name', async () => {
+				nodeParameters['action'] = 'playFavorite';
+				nodeParameters['players'] = 'Living Room, Dining Room';
+				nodeParameters['favorite'] = '10hz bass test';
+				nodeParameters['setVolume'] = true;
+				nodeParameters['volume'] = '32, 20';
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('players/RINCON_LIVING/playerVolume'),
+					api('players/RINCON_DINING/playerVolume'),
+					api('groups/RINCON_LIVING:20/favorites'),
+				]);
+				expect(commands()[2].body.favoriteId).toEqual('41');
+				expect(result[0][0].json).toMatchObject({ favorite: '10Hz Bass Test', volume: [32, 20] });
+			});
+
+			it('Plays a favorite without touching the volume when not asked', async () => {
+				nodeParameters['action'] = 'playFavorite';
+				nodeParameters['players'] = 'Kitchen';
+				nodeParameters['favorite'] = '10';
+
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('groups/RINCON_KITCHEN:10/favorites'),
+				]);
+			});
+
+			it('Plays a Sonos playlist chosen by name', async () => {
+				nodeParameters['action'] = 'playPlaylist';
+				nodeParameters['players'] = 'Office';
+				nodeParameters['playlist'] = 'Evening Mix';
+				nodeParameters['setVolume'] = true;
+				nodeParameters['volume'] = 32;
+
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('players/RINCON_OFFICE/playerVolume'),
+					api('groups/RINCON_OFFICE:30/playlists'),
+				]);
+				expect(commands()[1].body).toMatchObject({ playlistId: '1', playOnCompletion: true });
+			});
+
+			it('Starts the music with a volume', async () => {
+				nodeParameters['action'] = 'play';
+				nodeParameters['players'] = 'Kitchen';
+				nodeParameters['setVolume'] = true;
+				nodeParameters['volume'] = 14;
+
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('players/RINCON_KITCHEN/playerVolume'),
+					api('groups/RINCON_KITCHEN:10/playback/play'),
+				]);
+			});
+
+			it('Switches favorites with a fade out / fade in on every player', async () => {
+				nodeParameters['action'] = 'playFavorite';
+				nodeParameters['players'] = 'Living Room, Dining Room';
+				nodeParameters['favorite'] = '41';
+				nodeParameters['fadeDuration'] = 4;
+				nodeParameters['setVolume'] = true;
+				nodeParameters['volume'] = '40, 10';
+
+				await node.execute.apply(executeStub);
+
+				expect(sleep).toHaveBeenCalledTimes(4);
+				expect(
+					commands().map((call) =>
+						call.uri.endsWith('/favorites') ? 'favorite' : call.body.volume,
+					),
+				).toEqual([15, 10, 0, 0, 'favorite', 20, 5, 40, 10]);
+			});
+
+			it('Starts silent then fades in when the players were not playing', async () => {
+				nodeParameters['action'] = 'playPlaylist';
+				nodeParameters['players'] = 'Office';
+				nodeParameters['playlist'] = 'Morning Mix';
+				nodeParameters['fadeDuration'] = 4;
+				nodeParameters['setVolume'] = true;
+				nodeParameters['volume'] = 20;
+
+				await node.execute.apply(executeStub);
+
+				expect(
+					commands().map((call) => [call.uri, call.body?.volume ?? call.body?.playlistId]),
+				).toEqual([
+					[api('players/RINCON_OFFICE/playerVolume'), 0],
+					[api('groups/RINCON_OFFICE:30/playlists'), '0'],
+					[api('players/RINCON_OFFICE/playerVolume'), 10],
+					[api('players/RINCON_OFFICE/playerVolume'), 20],
+				]);
+			});
+
+			it('Fades back to the previous volumes when no volume is set', async () => {
+				nodeParameters['action'] = 'playFavorite';
+				nodeParameters['players'] = 'Kitchen';
+				nodeParameters['favorite'] = '10';
+				nodeParameters['fadeDuration'] = 2;
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(
+					commands().map((call) => [call.uri, call.body?.volume ?? call.body?.favoriteId]),
+				).toEqual([
+					[api('players/RINCON_KITCHEN/playerVolume'), 0],
+					[api('groups/RINCON_KITCHEN:10/favorites'), '10'],
+					[api('players/RINCON_KITCHEN/playerVolume'), 30],
+				]);
+				expect(result[0][0].json.volume).toEqual(30);
+			});
+		});
+
+		describe('Pause', () => {
+			it('Fades out every player, pauses, then gives each its volume back', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['players'] = 'Living Room, Dining Room';
+				nodeParameters['fadeDuration'] = 4;
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(
+					commands().map((call) => (call.uri.endsWith('/pause') ? 'pause' : call.body.volume)),
+				).toEqual([15, 10, 0, 0, 'pause', 30, 20]);
+				expect(result[0][0].json).toMatchObject({ fadeDuration: 4, restoredVolume: [30, 20] });
+			});
+
+			it('Pauses without fading when the players are not playing', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['players'] = 'Office';
+				nodeParameters['fadeDuration'] = 30;
+
+				await node.execute.apply(executeStub);
+
+				expect(sleep).not.toHaveBeenCalled();
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('groups/RINCON_OFFICE:30/playback/pause'),
+				]);
+			});
+
+			it('Rejects an invalid fade duration', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['players'] = 'Kitchen';
+				nodeParameters['fadeDuration'] = 900;
+
+				await expect(node.execute.apply(executeStub)).rejects.toThrow('Invalid fade duration');
+				expect(commands()).toEqual([]);
+			});
+		});
+
+		describe('Audio clips', () => {
+			it('Sends the clip to each listed player only, without grouping them', async () => {
+				nodeParameters['action'] = 'playAudioClip';
+				nodeParameters['targets'] = ['RINCON_KITCHEN', 'Living Room', 'RINCON_OFFICE'];
+				nodeParameters['url'] = 'https://example.com/doorbell.mp3';
+				nodeParameters['volume'] = 50;
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('players/RINCON_KITCHEN/audioClip'),
+					api('players/RINCON_LIVING/audioClip'),
+					api('players/RINCON_OFFICE/audioClip'),
+				]);
+				expect(commands()[0].body).toMatchObject({
+					streamUrl: 'https://example.com/doorbell.mp3',
+					volume: 50,
+				});
+				expect(result[0][0].json.players).toEqual(['Kitchen', 'Living Room', 'Office']);
+			});
+
+			it('Plays the clip at a different volume on each player', async () => {
+				nodeParameters['action'] = 'playAudioClip';
+				nodeParameters['targets'] = 'Kitchen, Office';
+				nodeParameters['url'] = 'https://example.com/clip.mp3';
+				nodeParameters['volume'] = '35, 50';
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => [call.uri, call.body.volume])).toEqual([
+					[api('players/RINCON_KITCHEN/audioClip'), 35],
+					[api('players/RINCON_OFFICE/audioClip'), 50],
+				]);
+				expect(result[0][0].json.volume).toEqual([35, 50]);
+			});
+
+			it('Rejects a clip volume list that does not match the players', async () => {
+				nodeParameters['action'] = 'playAudioClip';
+				nodeParameters['targets'] = 'Kitchen, Office';
+				nodeParameters['url'] = 'https://example.com/clip.mp3';
+				nodeParameters['volume'] = '35, 50, 20';
+
+				await expect(node.execute.apply(executeStub)).rejects.toThrow('2 volumes');
+				expect(commands()).toEqual([]);
+			});
+
+			it('Accepts a comma-separated list of player names', async () => {
+				nodeParameters['action'] = 'playAudioClip';
+				nodeParameters['targets'] = 'Dining Room, Living Room';
+				nodeParameters['url'] = 'https://example.com/clip.mp3';
+				nodeParameters['volume'] = 50;
+
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('players/RINCON_DINING/audioClip'),
+					api('players/RINCON_LIVING/audioClip'),
+				]);
+			});
+
+			it('Sends the clip to every player of a group given by its name', async () => {
+				nodeParameters['action'] = 'playAudioClip';
+				nodeParameters['targets'] = 'Living Room + 1';
+				nodeParameters['url'] = 'https://example.com/clip.mp3';
+				nodeParameters['volume'] = 50;
+
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.uri)).toEqual([
+					api('players/RINCON_LIVING/audioClip'),
+					api('players/RINCON_DINING/audioClip'),
+				]);
+			});
 		});
 
 		it('Processes every incoming item', async () => {
 			const rows = [
-				{ room: 'Kitchen', volume: 14 },
-				{ room: 'Living Room', volume: 20 },
-				{ room: 'Office', volume: 20 },
+				{ cible: 'Kitchen', volume: '14' },
+				{ cible: 'Living Room, Dining Room', volume: '20, 10' },
+				{ cible: 'Office', volume: 20 },
 			];
 			inputItems = rows.map((row) => ({ json: row }));
 			nodeParameters['action'] = 'groupVolume';
-			nodeParameters['target'] = ((i: number) => rows[i].room) as any;
+			nodeParameters['players'] = ((i: number) => rows[i].cible) as any;
 			nodeParameters['volume'] = ((i: number) => rows[i].volume) as any;
 
 			const result = await node.execute.apply(executeStub);
 
 			expect(result[0].length).toEqual(3);
-			expect(commands()).toEqual([
-				{ method: 'POST', uri: api('groups/RINCON_KITCHEN:10/groupVolume'), body: { volume: 14 } },
-				{ method: 'POST', uri: api('groups/RINCON_LIVING:20/groupVolume'), body: { volume: 20 } },
-				{ method: 'POST', uri: api('groups/RINCON_OFFICE:30/groupVolume'), body: { volume: 20 } },
+			expect(volumeCalls()).toEqual([
+				['RINCON_KITCHEN', 14],
+				['RINCON_LIVING', 20],
+				['RINCON_DINING', 10],
+				['RINCON_OFFICE', 20],
 			]);
 			expect(result[0].map((item) => item.pairedItem)).toEqual([
 				{ item: 0 },

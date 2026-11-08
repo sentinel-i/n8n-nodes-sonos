@@ -26,6 +26,9 @@ import {
 	setTVPowerState,
 } from './GenericFunctions';
 
+const VOLUME_DESCRIPTION =
+	'One volume for every player (e.g. 30), or one volume per player in the same order as Players (e.g. 30, 30, 20)';
+
 export class Sonos implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Sonos',
@@ -66,48 +69,42 @@ export class Sonos implements INodeType {
 						name: 'Play Audio Clip',
 						value: 'playAudioClip',
 						description:
-							'Plays an audio file from a URL on every player of the selected groups, then the music resumes',
+							'Plays an audio file from a URL on each selected player (without grouping them), then the music resumes',
 					},
 					{
 						name: 'Play',
 						value: 'play',
-						description: 'Starts the music on the selected group',
+						description: 'Starts the music on the selected players',
 					},
 					{
 						name: 'Play Favorite',
 						value: 'playFavorite',
-						description: 'Loads a Sonos favorite and plays it on the selected group',
+						description: 'Loads a Sonos favorite and plays it on the selected players',
 					},
 					{
 						name: 'Play Playlist',
 						value: 'playPlaylist',
-						description: 'Loads a Sonos playlist and plays it on the selected group',
+						description: 'Loads a Sonos playlist and plays it on the selected players',
 					},
 					{
 						name: 'Pause',
 						value: 'pause',
-						description: 'Stops the music on the selected group',
+						description: 'Stops the music on the selected players',
 					},
 					{
 						name: 'Toggle Play/Pause',
 						value: 'togglePlayPause',
-						description: 'Toggles the music on the selected group',
+						description: 'Toggles the music on the selected players',
 					},
 					{
 						name: 'Skip Song',
 						value: 'skipToNextTrack',
-						description: 'Skips the song on the selected group',
+						description: 'Skips the song on the selected players',
 					},
 					{
 						name: 'Previous Song',
 						value: 'skipToPreviousTrack',
-						description: 'Jumps to previous song on the selected group',
-					},
-					{
-						name: 'Group Players',
-						value: 'groupPlayers',
-						description:
-							'Makes sure the selected players form one group (adds and removes players if needed)',
+						description: 'Jumps to previous song on the selected players',
 					},
 					{
 						name: 'Group All Players',
@@ -117,7 +114,7 @@ export class Sonos implements INodeType {
 					{
 						name: 'Set Group Volume',
 						value: 'groupVolume',
-						description: 'Sets the volume of the selected group',
+						description: 'Sets the volume of the selected players',
 					},
 					{
 						name: 'Set Home Theater Options',
@@ -139,13 +136,13 @@ export class Sonos implements INodeType {
 				required: true,
 			},
 			{
-				displayName: 'Group',
-				name: 'target',
-				type: 'options' as NodePropertyTypes,
+				displayName: 'Players',
+				name: 'players',
+				type: 'multiOptions' as NodePropertyTypes,
 				options: [],
-				default: '',
+				default: [],
 				description:
-					'Group to control. Empty: first group found. In an expression, use a player name, a group name or an ID.',
+					'Players that play together. Before acting, they are grouped exactly as listed if needed (players not listed leave the group and keep their music). In an expression, use a comma-separated list of player names.',
 				displayOptions: {
 					show: {
 						action: [
@@ -161,41 +158,22 @@ export class Sonos implements INodeType {
 					},
 				},
 				typeOptions: {
-					loadOptionsMethod: 'loadGroups',
-					loadOptionsDependsOn: ['household'],
+					loadOptionsMethod: 'loadPlayers',
+					loadOptionsDependsOn: ['household', 'action'],
 				},
 			},
 			{
-				displayName: 'Groups',
+				displayName: 'Players',
 				name: 'targets',
 				type: 'multiOptions' as NodePropertyTypes,
 				options: [],
 				default: [],
 				required: true,
 				description:
-					'The clip is played on every player of these groups. In an expression, use a comma-separated list of player or group names.',
+					'The clip is sent to each of these players, without grouping them. In an expression, use a comma-separated list of player names.',
 				displayOptions: {
 					show: {
 						action: ['playAudioClip'],
-					},
-				},
-				typeOptions: {
-					loadOptionsMethod: 'loadGroups',
-					loadOptionsDependsOn: ['household'],
-				},
-			},
-			{
-				displayName: 'Players',
-				name: 'members',
-				type: 'multiOptions' as NodePropertyTypes,
-				options: [],
-				default: [],
-				required: true,
-				description:
-					'Players that must be in the group. In an expression, use a comma-separated list of player names.',
-				displayOptions: {
-					show: {
-						action: ['groupPlayers'],
 					},
 				},
 				typeOptions: {
@@ -298,7 +276,7 @@ export class Sonos implements INodeType {
 				type: 'number' as NodePropertyTypes,
 				default: 0,
 				description:
-					'Seconds during which the volume is lowered before pausing (0 = pause immediately). The original volume is restored once paused.',
+					'Seconds during which every player is lowered to 0 before pausing (0 = pause immediately). Each player gets its volume back once paused.',
 				typeOptions: {
 					minValue: 0,
 					maxValue: 300,
@@ -316,7 +294,7 @@ export class Sonos implements INodeType {
 				type: 'number' as NodePropertyTypes,
 				default: 0,
 				description:
-					'Seconds during which the volume changes progressively to the new value (0 = immediate)',
+					'Seconds during which every player changes progressively, at the same time, to its new volume (0 = immediate)',
 				typeOptions: {
 					minValue: 0,
 					maxValue: 300,
@@ -334,7 +312,7 @@ export class Sonos implements INodeType {
 				type: 'number' as NodePropertyTypes,
 				default: 0,
 				description:
-					'Seconds of fade out of the current music, then fade in of the new one (0 = immediate switch). The fade in goes up to the Volume below when Set Volume is on, otherwise to the current volume.',
+					'Seconds of fade out of the current music, then fade in of the new one, on every player at the same time (0 = immediate switch). The fade in goes up to the Volume below when Set Volume is on, otherwise to the current volumes.',
 				typeOptions: {
 					minValue: 0,
 					maxValue: 300,
@@ -351,7 +329,7 @@ export class Sonos implements INodeType {
 				name: 'setVolume',
 				type: 'boolean' as NodePropertyTypes,
 				default: false,
-				description: 'Whether to set the group volume before starting the music',
+				description: 'Whether to set the volume of the players before starting the music',
 				displayOptions: {
 					show: {
 						action: ['play', 'playFavorite', 'playPlaylist'],
@@ -361,14 +339,10 @@ export class Sonos implements INodeType {
 			{
 				displayName: 'Volume',
 				name: 'volume',
-				type: 'number' as NodePropertyTypes,
-				default: 20,
+				type: 'string' as NodePropertyTypes,
+				default: '20',
 				required: true,
-				typeOptions: {
-					maxValue: 100,
-					minValue: 0,
-					numberStepSize: 1,
-				},
+				description: VOLUME_DESCRIPTION,
 				displayOptions: {
 					show: {
 						action: ['play', 'playFavorite', 'playPlaylist'],
@@ -379,14 +353,10 @@ export class Sonos implements INodeType {
 			{
 				displayName: 'Volume',
 				name: 'volume',
-				type: 'number' as NodePropertyTypes,
-				default: 50,
+				type: 'string' as NodePropertyTypes,
+				default: '50',
 				required: true,
-				typeOptions: {
-					maxValue: 100,
-					minValue: 1,
-					numberStepSize: 1,
-				},
+				description: VOLUME_DESCRIPTION,
 				displayOptions: {
 					show: {
 						action: ['playAudioClip', 'groupVolume'],
