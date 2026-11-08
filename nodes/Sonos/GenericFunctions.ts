@@ -157,27 +157,167 @@ export function describeGroup(topology: SonosTopology, group: SonosGroup): IData
 	};
 }
 
-async function getGroupForItem(
+function sameSet(a: string[], b: string[]): boolean {
+	return a.length === b.length && a.every((id) => b.includes(id));
+}
+
+/**
+ * Resolves player references (id or name) to player ids, in the given order.
+ */
+export function resolvePlayerIds(topology: SonosTopology, references: string[]): string[] {
+	const playerIds: string[] = [];
+	for (const reference of references) {
+		const player = findPlayer(topology, reference);
+		if (!player) {
+			throw new Error(`No Sonos player found for "${reference}"`);
+		}
+		if (!playerIds.includes(player.id)) {
+			playerIds.push(player.id);
+		}
+	}
+	return playerIds;
+}
+
+/**
+ * The players an action applies to, and the Sonos group they currently form.
+ */
+interface Zone {
+	topology: SonosTopology;
+	group: SonosGroup;
+	playerIds: string[];
+	regrouped: boolean;
+}
+
+/**
+ * Makes sure the given players form exactly one group, alone.
+ * Nothing is sent when they already do. Otherwise a group is created with exactly
+ * these players: players not listed keep their own music, and the new group keeps
+ * the music of the group the first player was in.
+ */
+async function ensureGroup(
 	this: IExecuteFunctions,
-	itemIndex: number,
-): Promise<{ topology: SonosTopology; group: SonosGroup }> {
+	household: string,
+	topology: SonosTopology,
+	playerIds: string[],
+): Promise<{ group: SonosGroup; regrouped: boolean }> {
+	const current = topology.groups.find((g) => g.playerIds.includes(playerIds[0]));
+	if (current && sameSet(current.playerIds, playerIds)) {
+		return { group: current, regrouped: false };
+	}
+
+	const body: IDataObject = { playerIds };
+	if (current) {
+		body.musicContextGroupId = current.id;
+	}
+	const response = await callSonosApi.call(
+		this,
+		'POST',
+		`households/${household}/groups/createGroup`,
+		body,
+	);
+	let group = response.group as unknown as SonosGroup | undefined;
+	if (!group || !group.id) {
+		const refreshed = await getTopology.call(this, household);
+		group = refreshed.groups.find((g) => sameSet(g.playerIds, playerIds));
+	}
+	if (!group) {
+		throw new Error('Sonos could not group the selected players');
+	}
+	return {
+		group: {
+			...group,
+			playerIds: group.playerIds || playerIds,
+			playbackState: group.playbackState ?? current?.playbackState,
+		},
+		regrouped: true,
+	};
+}
+
+/**
+ * Finds the players an item applies to.
+ * With the Players field, the players are grouped exactly as listed.
+ * Workflows made with the former Group field target the group containing that player
+ * (or the first group found), without regrouping.
+ */
+async function getZoneForItem(this: IExecuteFunctions, itemIndex: number): Promise<Zone> {
 	const household = this.getNodeParameter('household', itemIndex) as string;
-	const target = this.getNodeParameter('target', itemIndex, '') as string;
+	const references = toList(this.getNodeParameter('players', itemIndex, []));
 	const topology = await getTopology.call(this, household);
-	return { topology, group: resolveGroup(topology, target) };
+
+	if (references.length === 0) {
+		const legacyTarget = this.getNodeParameter('target', itemIndex, '') as string;
+		const group = resolveGroup(topology, legacyTarget);
+		return { topology, group, playerIds: group.playerIds, regrouped: false };
+	}
+
+	const playerIds = resolvePlayerIds(topology, references);
+	const { group, regrouped } = await ensureGroup.call(this, household, topology, playerIds);
+	return { topology, group, playerIds, regrouped };
+}
+
+function describeZone(zone: Zone): IDataObject {
+	return { ...describeGroup(zone.topology, zone.group), regrouped: zone.regrouped };
+}
+
+/**
+ * Accepts one volume for every player ("30") or one volume per player ("30, 30, 20").
+ */
+export function parseVolumes(value: unknown, playerCount: number): number[] {
+	const list = toList(value);
+	if (list.length === 1) {
+		const volume = parseVolume(list[0]);
+		return Array.from({ length: playerCount }, () => volume);
+	}
+	if (list.length !== playerCount) {
+		throw new Error(
+			`Invalid volume "${value}", expected one volume or ${playerCount} volumes (one per player)`,
+		);
+	}
+	return list.map(parseVolume);
+}
+
+/**
+ * Shows a single number when every player has the same volume.
+ */
+function volumeOutput(volumes: number[] | undefined): number | number[] | undefined {
+	if (!volumes) {
+		return undefined;
+	}
+	return volumes.every((volume) => volume === volumes[0]) ? volumes[0] : volumes;
+}
+
+async function getPlayerVolumes(this: IExecuteFunctions, playerIds: string[]): Promise<number[]> {
+	const volumes: number[] = [];
+	for (const playerId of playerIds) {
+		const current = await callSonosApi.call(this, 'GET', `players/${playerId}/playerVolume`);
+		volumes.push(Number(current.volume ?? 0));
+	}
+	return volumes;
+}
+
+async function setPlayerVolumes(
+	this: IExecuteFunctions,
+	playerIds: string[],
+	volumes: number[],
+): Promise<void> {
+	for (let index = 0; index < playerIds.length; index++) {
+		await callSonosApi.call(this, 'POST', `players/${playerIds[index]}/playerVolume`, {
+			volume: volumes[index],
+		});
+	}
 }
 
 async function applyOptionalVolume(
 	this: IExecuteFunctions,
 	itemIndex: number,
-	groupId: string,
-): Promise<number | undefined> {
+	playerIds: string[],
+): Promise<number[] | undefined> {
 	if (!this.getNodeParameter('setVolume', itemIndex, false)) {
 		return undefined;
 	}
-	const volume = parseVolume(this.getNodeParameter('volume', itemIndex));
-	await callSonosApi.call(this, 'POST', `groups/${groupId}/groupVolume`, { volume });
-	return volume;
+	const volumes = parseVolumes(this.getNodeParameter('volume', itemIndex), playerIds.length);
+	await setPlayerVolumes.call(this, playerIds, volumes);
+	return volumes;
 }
 
 /**
@@ -209,16 +349,19 @@ export async function playAudioClip(
 		playerNames = [legacyPlayer];
 	} else {
 		if (targets.length === 0) {
-			throw new Error('Select at least one target');
+			throw new Error('Select at least one player');
 		}
 		const topology = await getTopology.call(this, household);
 		for (const target of targets) {
-			for (const playerId of resolveGroup(topology, target).playerIds) {
-				const player = findPlayer(topology, playerId);
+			// A player name or id targets that player only; a group name or id targets its players
+			const player = findPlayer(topology, target);
+			const targetIds = player ? [player.id] : resolveGroup(topology, target).playerIds;
+			for (const playerId of targetIds) {
+				const targetPlayer = findPlayer(topology, playerId);
 				if (playerIds.includes(playerId)) continue;
-				if (player && !player.capabilities.includes('AUDIO_CLIP')) continue;
+				if (targetPlayer && !targetPlayer.capabilities.includes('AUDIO_CLIP')) continue;
 				playerIds.push(playerId);
-				playerNames.push(player?.name || playerId);
+				playerNames.push(targetPlayer?.name || playerId);
 			}
 		}
 	}
@@ -256,8 +399,8 @@ export async function groupAll(this: IExecuteFunctions): Promise<IDataObject> {
 }
 
 /**
- * Makes sure the selected players form exactly one group.
- * Nothing is sent when the group already has the right members.
+ * Former "Group Players" action, kept so that workflows made with it still run.
+ * Every group action now groups its players itself.
  */
 export async function groupPlayers(
 	this: IExecuteFunctions,
@@ -265,46 +408,15 @@ export async function groupPlayers(
 ): Promise<IDataObject> {
 	const household = this.getNodeParameter('household', itemIndex) as string;
 	const topology = await getTopology.call(this, household);
-	const members = toList(this.getNodeParameter('members', itemIndex, [])).map((reference) => {
-		const player = findPlayer(topology, reference);
-		if (!player) {
-			throw new Error(`No Sonos player found for "${reference}"`);
-		}
-		return player;
-	});
-	if (members.length === 0) {
+	const playerIds = resolvePlayerIds(
+		topology,
+		toList(this.getNodeParameter('members', itemIndex, [])),
+	);
+	if (playerIds.length === 0) {
 		throw new Error('Select at least one player');
 	}
-
-	const playerIds = members.map((player) => player.id);
-	const currentGroup = topology.groups.find((g) => g.playerIds.includes(playerIds[0]));
-	const alreadyGrouped =
-		currentGroup !== undefined &&
-		currentGroup.playerIds.length === playerIds.length &&
-		playerIds.every((id) => currentGroup.playerIds.includes(id));
-
-	if (alreadyGrouped) {
-		return { changed: false, ...describeGroup(topology, currentGroup!) };
-	}
-
-	const body: IDataObject = { playerIds };
-	if (currentGroup) {
-		// Keep the music currently playing on the group of the first player
-		body.musicContextGroupId = currentGroup.id;
-	}
-	const response = await callSonosApi.call(
-		this,
-		'POST',
-		`households/${household}/groups/createGroup`,
-		body,
-	);
-	const newGroup = response.group as unknown as SonosGroup | undefined;
-	return {
-		changed: true,
-		...(newGroup && newGroup.playerIds
-			? describeGroup(topology, newGroup)
-			: { members: members.map((player) => player.name) }),
-	};
+	const { group, regrouped } = await ensureGroup.call(this, household, topology, playerIds);
+	return { changed: regrouped, ...describeGroup(topology, group) };
 }
 
 export const timing = {
@@ -331,87 +443,90 @@ function isPlaying(group: SonosGroup): boolean {
 	);
 }
 
-async function getGroupVolume(this: IExecuteFunctions, groupId: string): Promise<number> {
-	const current = await callSonosApi.call(this, 'GET', `groups/${groupId}/groupVolume`);
-	return Number(current.volume ?? 0);
-}
-
 /**
- * Changes the group volume step by step (about every 2 seconds) from one value to another.
+ * Changes the volume of every player step by step (about every 2 seconds), all at the same
+ * time, each one from its own start volume to its own target volume.
  */
-async function rampVolume(
+async function rampVolumes(
 	this: IExecuteFunctions,
-	groupId: string,
-	from: number,
-	to: number,
+	playerIds: string[],
+	from: number[],
+	to: number[],
 	seconds: number,
 ): Promise<void> {
-	if (from === to) {
+	if (from.every((volume, index) => volume === to[index])) {
 		return;
 	}
 	const steps = Math.max(1, Math.round(seconds / FADE_STEP_SECONDS));
 	for (let step = 1; step <= steps; step++) {
 		await timing.sleep((seconds * 1000) / steps);
-		const volume = Math.round(from + ((to - from) * step) / steps);
-		await callSonosApi.call(this, 'POST', `groups/${groupId}/groupVolume`, { volume });
+		for (let index = 0; index < playerIds.length; index++) {
+			if (from[index] === to[index]) continue;
+			const volume = Math.round(from[index] + ((to[index] - from[index]) * step) / steps);
+			await callSonosApi.call(this, 'POST', `players/${playerIds[index]}/playerVolume`, {
+				volume,
+			});
+		}
 	}
 }
 
 /**
- * Lowers the group volume step by step down to 0, pauses, then restores the
- * original volume so the next playback starts at the usual level.
- * Returns the restored volume, or undefined when no fade was done.
+ * Lowers every player step by step down to 0, pauses, then gives each player its
+ * volume back so the next playback starts at the usual level.
+ * Returns the restored volumes, or undefined when no fade was done.
  */
 async function fadeOutAndPause(
 	this: IExecuteFunctions,
-	group: SonosGroup,
+	zone: Zone,
 	fadeSeconds: number,
-): Promise<number | undefined> {
-	if (fadeSeconds <= 0 || !isPlaying(group)) {
-		await callSonosApi.call(this, 'POST', `groups/${group.id}/playback/pause`);
+): Promise<number[] | undefined> {
+	if (fadeSeconds <= 0 || !isPlaying(zone.group)) {
+		await callSonosApi.call(this, 'POST', `groups/${zone.group.id}/playback/pause`);
 		return undefined;
 	}
 
-	const startVolume = await getGroupVolume.call(this, group.id);
-	await rampVolume.call(this, group.id, startVolume, 0, fadeSeconds);
-	await callSonosApi.call(this, 'POST', `groups/${group.id}/playback/pause`);
-	await callSonosApi.call(this, 'POST', `groups/${group.id}/groupVolume`, { volume: startVolume });
-	return startVolume;
+	const startVolumes = await getPlayerVolumes.call(this, zone.playerIds);
+	const zeros = zone.playerIds.map(() => 0);
+	await rampVolumes.call(this, zone.playerIds, startVolumes, zeros, fadeSeconds);
+	await callSonosApi.call(this, 'POST', `groups/${zone.group.id}/playback/pause`);
+	await setPlayerVolumes.call(this, zone.playerIds, startVolumes);
+	return startVolumes;
 }
 
 /**
  * Loads new content (favorite or playlist) on a group.
- * With a transition duration, the current music fades out, the new content is loaded
- * at volume 0 and fades in up to the requested volume (or the previous one).
+ * With a fade duration, the current music fades out, the new content is loaded
+ * at volume 0 and fades in up to the requested volumes (or the previous ones).
  */
 async function loadContent(
 	this: IExecuteFunctions,
 	itemIndex: number,
-	group: SonosGroup,
+	zone: Zone,
 	path: string,
 	body: IDataObject,
-): Promise<number | undefined> {
-	const transition = parseFadeDuration(this.getNodeParameter('fadeDuration', itemIndex, 0));
-	if (transition <= 0) {
-		const volume = await applyOptionalVolume.call(this, itemIndex, group.id);
+): Promise<number[] | undefined> {
+	const fadeSeconds = parseFadeDuration(this.getNodeParameter('fadeDuration', itemIndex, 0));
+	if (fadeSeconds <= 0) {
+		const volumes = await applyOptionalVolume.call(this, itemIndex, zone.playerIds);
 		await callSonosApi.call(this, 'POST', path, body);
-		return volume;
+		return volumes;
 	}
 
-	const requestedVolume = this.getNodeParameter('setVolume', itemIndex, false)
-		? parseVolume(this.getNodeParameter('volume', itemIndex))
+	const requestedVolumes = this.getNodeParameter('setVolume', itemIndex, false)
+		? parseVolumes(this.getNodeParameter('volume', itemIndex), zone.playerIds.length)
 		: undefined;
-	const currentVolume = await getGroupVolume.call(this, group.id);
-	const targetVolume = requestedVolume ?? currentVolume;
+	const currentVolumes = await getPlayerVolumes.call(this, zone.playerIds);
+	const targetVolumes = requestedVolumes ?? currentVolumes;
+	const zeros = zone.playerIds.map(() => 0);
 
-	if (isPlaying(group)) {
-		await rampVolume.call(this, group.id, currentVolume, 0, transition);
-	} else if (currentVolume !== 0) {
-		await callSonosApi.call(this, 'POST', `groups/${group.id}/groupVolume`, { volume: 0 });
+	if (isPlaying(zone.group)) {
+		await rampVolumes.call(this, zone.playerIds, currentVolumes, zeros, fadeSeconds);
+	} else if (currentVolumes.some((volume) => volume !== 0)) {
+		await setPlayerVolumes.call(this, zone.playerIds, zeros);
 	}
 	await callSonosApi.call(this, 'POST', path, body);
-	await rampVolume.call(this, group.id, 0, targetVolume, transition);
-	return targetVolume;
+	await rampVolumes.call(this, zone.playerIds, zeros, targetVolumes, fadeSeconds);
+	return targetVolumes;
 }
 
 export async function executeGroupAction(
@@ -419,16 +534,24 @@ export async function executeGroupAction(
 	action: string,
 	itemIndex: number,
 ): Promise<IDataObject> {
-	const { topology, group } = await getGroupForItem.call(this, itemIndex);
+	const zone = await getZoneForItem.call(this, itemIndex);
 	if (action === 'pause') {
 		const fadeDuration = parseFadeDuration(this.getNodeParameter('fadeDuration', itemIndex, 0));
-		const restoredVolume = await fadeOutAndPause.call(this, group, fadeDuration);
-		return { ...describeGroup(topology, group), fadeDuration, restoredVolume };
+		const restoredVolume = await fadeOutAndPause.call(this, zone, fadeDuration);
+		return { ...describeZone(zone), fadeDuration, restoredVolume: volumeOutput(restoredVolume) };
 	}
-	const volume =
-		action === 'play' ? await applyOptionalVolume.call(this, itemIndex, group.id) : undefined;
-	await callSonosApi.call(this, 'POST', `groups/${group.id}/playback/${action}`);
-	return { ...describeGroup(topology, group), volume };
+	const volumes =
+		action === 'play' ? await applyOptionalVolume.call(this, itemIndex, zone.playerIds) : undefined;
+	await callSonosApi.call(this, 'POST', `groups/${zone.group.id}/playback/${action}`);
+	return { ...describeZone(zone), volume: volumeOutput(volumes) };
+}
+
+function playModes(this: IExecuteFunctions, itemIndex: number): IDataObject {
+	return {
+		shuffle: this.getNodeParameter('shuffle', itemIndex),
+		repeat: this.getNodeParameter('repeat', itemIndex),
+		crossfade: this.getNodeParameter('crossfade', itemIndex),
+	};
 }
 
 export async function playFavorite(
@@ -436,24 +559,26 @@ export async function playFavorite(
 	itemIndex: number,
 ): Promise<IDataObject> {
 	const household = this.getNodeParameter('household', itemIndex) as string;
-	const { topology, group } = await getGroupForItem.call(this, itemIndex);
 	const favorites = await callSonosApi.call(this, 'GET', `households/${household}/favorites`);
 	const favorite = resolveItemId(
 		favorites.items || [],
 		String(this.getNodeParameter('favorite', itemIndex)),
 		'favorite',
 	);
-	const volume = await loadContent.call(this, itemIndex, group, `groups/${group.id}/favorites`, {
-		action: 'replace',
-		playOnCompletion: true,
-		favoriteId: favorite.id,
-		playModes: {
-			shuffle: this.getNodeParameter('shuffle', itemIndex),
-			repeat: this.getNodeParameter('repeat', itemIndex),
-			crossfade: this.getNodeParameter('crossfade', itemIndex),
+	const zone = await getZoneForItem.call(this, itemIndex);
+	const volumes = await loadContent.call(
+		this,
+		itemIndex,
+		zone,
+		`groups/${zone.group.id}/favorites`,
+		{
+			action: 'replace',
+			playOnCompletion: true,
+			favoriteId: favorite.id,
+			playModes: playModes.call(this, itemIndex),
 		},
-	});
-	return { ...describeGroup(topology, group), favorite: favorite.name, volume };
+	);
+	return { ...describeZone(zone), favorite: favorite.name, volume: volumeOutput(volumes) };
 }
 
 export async function playPlaylist(
@@ -461,40 +586,42 @@ export async function playPlaylist(
 	itemIndex: number,
 ): Promise<IDataObject> {
 	const household = this.getNodeParameter('household', itemIndex) as string;
-	const { topology, group } = await getGroupForItem.call(this, itemIndex);
 	const playlists = await callSonosApi.call(this, 'GET', `households/${household}/playlists`);
 	const playlist = resolveItemId(
 		playlists.playlists || [],
 		String(this.getNodeParameter('playlist', itemIndex)),
 		'playlist',
 	);
-	const volume = await loadContent.call(this, itemIndex, group, `groups/${group.id}/playlists`, {
-		action: 'replace',
-		playOnCompletion: true,
-		playlistId: playlist.id,
-		playModes: {
-			shuffle: this.getNodeParameter('shuffle', itemIndex),
-			repeat: this.getNodeParameter('repeat', itemIndex),
-			crossfade: this.getNodeParameter('crossfade', itemIndex),
+	const zone = await getZoneForItem.call(this, itemIndex);
+	const volumes = await loadContent.call(
+		this,
+		itemIndex,
+		zone,
+		`groups/${zone.group.id}/playlists`,
+		{
+			action: 'replace',
+			playOnCompletion: true,
+			playlistId: playlist.id,
+			playModes: playModes.call(this, itemIndex),
 		},
-	});
-	return { ...describeGroup(topology, group), playlist: playlist.name, volume };
+	);
+	return { ...describeZone(zone), playlist: playlist.name, volume: volumeOutput(volumes) };
 }
 
 export async function setGroupVolume(
 	this: IExecuteFunctions,
 	itemIndex: number,
 ): Promise<IDataObject> {
-	const { topology, group } = await getGroupForItem.call(this, itemIndex);
-	const volume = parseVolume(this.getNodeParameter('volume', itemIndex));
+	const zone = await getZoneForItem.call(this, itemIndex);
+	const volumes = parseVolumes(this.getNodeParameter('volume', itemIndex), zone.playerIds.length);
 	const fadeDuration = parseFadeDuration(this.getNodeParameter('fadeDuration', itemIndex, 0));
 	if (fadeDuration > 0) {
-		const currentVolume = await getGroupVolume.call(this, group.id);
-		await rampVolume.call(this, group.id, currentVolume, volume, fadeDuration);
+		const currentVolumes = await getPlayerVolumes.call(this, zone.playerIds);
+		await rampVolumes.call(this, zone.playerIds, currentVolumes, volumes, fadeDuration);
 	} else {
-		await callSonosApi.call(this, 'POST', `groups/${group.id}/groupVolume`, { volume });
+		await setPlayerVolumes.call(this, zone.playerIds, volumes);
 	}
-	return { ...describeGroup(topology, group), volume, fadeDuration };
+	return { ...describeZone(zone), volume: volumeOutput(volumes), fadeDuration };
 }
 
 export async function loadPlayers(

@@ -24,30 +24,41 @@ Afterwards you should be able to create workflows using the Sonos node.
 ## Features and possible use cases
 
 Currently supported features:
-* Play / Pause / Toggle Play/Pause / Skip Song / Previous Song on a selected group
-* Pause with an optional fade out: the volume is lowered progressively, the music is paused, then the original volume is restored
-* Play Favorite on a selected group (optionally setting the volume first)
-* Play Playlist (Sonos playlists) on a selected group (optionally setting the volume first)
-* Set Group Volume on a selected group, optionally changing it progressively (fade)
-* Fade Duration on Play Favorite / Play Playlist: when switching content, the current music fades out, the new one fades in
-* Group Players: makes sure the selected players form one group (adds and removes players if needed)
+* Play / Pause / Toggle Play/Pause / Skip Song / Previous Song on the selected players
+* Play Favorite and Play Playlist (Sonos playlists) on the selected players, optionally setting the volume first
+* Set Group Volume on the selected players
+* Fade Duration on Pause, Set Group Volume, Play Favorite and Play Playlist: every player changes progressively, at the same time, to its own volume
+* Play Audio Clip from a URL on each selected player (the music is lowered during the clip, then resumes)
 * Group all players
-* Play Audio Clip from a URL on every player of one or several groups (the music is lowered during the clip, then resumes)
 * Turn On/Off TV (requires supported device)
 * Start Home Theater Playback
 * Set Home Theater Options (night mode / dialog enhancement)
 
-### Targeting a group
+### Players and grouping
 
-Sonos group IDs change every time speakers are regrouped, so the node stores the coordinator player of the selected group
-and looks up the group containing it on every execution. When the "Group" field is left empty, the first group found is used
-(behaviour of previous versions).
+The playback and volume actions have a "Players" field: the players that play together.
+Before acting, the node makes sure they form exactly one group: if needed it regroups them,
+players that are not listed leave the group and keep their own music. A speaker grouped by mistake in the Sonos app
+is therefore separated again by the next action.
 
-When the fields are set with expressions (e.g. from a schedule table), the node also accepts names:
-* Group / Groups: a player name (`Living Room`), a group name (`Living Room + 1`) or an ID. Several targets can be given as a comma-separated list.
+Play Audio Clip sends the clip to each selected player without grouping them.
+
+Workflows made with the former "Group" field keep working: they act on the group containing that player
+(or on the first group found when it is empty), without regrouping.
+
+### Volumes
+
+The Volume field accepts one volume for every player (`30`) or one volume per player, in the same order as the
+Players field (`30, 30, 20`). Each player is set individually, so the differences between players are kept
+even after a fade to 0.
+
+### Expressions
+
+When the fields are set with expressions (e.g. from a schedule table), the node accepts names:
+* Players: a comma-separated list of player names or IDs (`Living Room, Dining Room`).
 * Favorite / Playlist: the name as displayed in the Sonos app, or its ID.
 
-Every incoming item is processed, and the output describes what was done (group name, members, volume, favorite...).
+Every incoming item is processed, and the output describes what was done (group, members, whether it was regrouped, volumes...).
 
 Possible use cases
 * Every day at 10pm set the home theater to night mode and enhance dialogs, every morning switch back
