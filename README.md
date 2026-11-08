@@ -28,7 +28,7 @@ Currently supported features:
 * Play Favorite and Play Playlist (Sonos playlists) on the selected players, optionally setting the volume first
 * Set Group Volume on the selected players
 * Fade Duration on Pause, Set Group Volume, Play Favorite and Play Playlist: every player changes progressively, at the same time, to its own volume
-* Play Audio Clip from a URL on each selected player (the music is lowered during the clip, then resumes)
+* Play Audio Clip from a URL on each selected player, with one volume for all or one per player (the music is lowered during the clip, then resumes)
 * Group all players
 * Turn On/Off TV (requires supported device)
 * Start Home Theater Playback

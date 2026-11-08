@@ -738,6 +738,31 @@ describe('Sonos Node', () => {
 				expect(result[0][0].json.players).toEqual(['Kitchen', 'Living Room', 'Office']);
 			});
 
+			it('Plays the clip at a different volume on each player', async () => {
+				nodeParameters['action'] = 'playAudioClip';
+				nodeParameters['targets'] = 'Kitchen, Office';
+				nodeParameters['url'] = 'https://example.com/clip.mp3';
+				nodeParameters['volume'] = '35, 50';
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => [call.uri, call.body.volume])).toEqual([
+					[api('players/RINCON_KITCHEN/audioClip'), 35],
+					[api('players/RINCON_OFFICE/audioClip'), 50],
+				]);
+				expect(result[0][0].json.volume).toEqual([35, 50]);
+			});
+
+			it('Rejects a clip volume list that does not match the players', async () => {
+				nodeParameters['action'] = 'playAudioClip';
+				nodeParameters['targets'] = 'Kitchen, Office';
+				nodeParameters['url'] = 'https://example.com/clip.mp3';
+				nodeParameters['volume'] = '35, 50, 20';
+
+				await expect(node.execute.apply(executeStub)).rejects.toThrow('2 volumes');
+				expect(commands()).toEqual([]);
+			});
+
 			it('Accepts a comma-separated list of player names', async () => {
 				nodeParameters['action'] = 'playAudioClip';
 				nodeParameters['targets'] = 'Dining Room, Living Room';

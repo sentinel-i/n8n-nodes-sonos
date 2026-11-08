@@ -342,42 +342,48 @@ export async function playAudioClip(
 	// Workflows created with previous versions target a single player
 	const legacyPlayer = this.getNodeParameter('player', itemIndex, '') as string;
 
-	let playerIds: string[] = [];
-	let playerNames: string[] = [];
+	// Players in the order given, before removing duplicates and players that cannot play clips,
+	// so that a list of volumes matches the list of players
+	let listedIds: string[] = [];
+	let topology: SonosTopology | undefined;
 	if (targets.length === 0 && legacyPlayer) {
-		playerIds = [legacyPlayer];
-		playerNames = [legacyPlayer];
+		listedIds = [legacyPlayer];
 	} else {
 		if (targets.length === 0) {
 			throw new Error('Select at least one player');
 		}
-		const topology = await getTopology.call(this, household);
+		topology = await getTopology.call(this, household);
 		for (const target of targets) {
 			// A player name or id targets that player only; a group name or id targets its players
 			const player = findPlayer(topology, target);
-			const targetIds = player ? [player.id] : resolveGroup(topology, target).playerIds;
-			for (const playerId of targetIds) {
-				const targetPlayer = findPlayer(topology, playerId);
-				if (playerIds.includes(playerId)) continue;
-				if (targetPlayer && !targetPlayer.capabilities.includes('AUDIO_CLIP')) continue;
-				playerIds.push(playerId);
-				playerNames.push(targetPlayer?.name || playerId);
-			}
+			listedIds.push(...(player ? [player.id] : resolveGroup(topology, target).playerIds));
 		}
 	}
 
 	const streamUrl = this.getNodeParameter('url', itemIndex) as string;
-	const volume = parseVolume(this.getNodeParameter('volume', itemIndex));
-	for (const playerId of playerIds) {
-		await callSonosApi.call(this, 'POST', `players/${playerId}/audioClip`, {
+	const listedVolumes = parseVolumes(this.getNodeParameter('volume', itemIndex), listedIds.length);
+	const clips: Array<{ playerId: string; name: string; volume: number }> = [];
+	listedIds.forEach((playerId, index) => {
+		const player = topology ? findPlayer(topology, playerId) : undefined;
+		if (clips.some((clip) => clip.playerId === playerId)) return;
+		if (player && !player.capabilities.includes('AUDIO_CLIP')) return;
+		clips.push({ playerId, name: player?.name || playerId, volume: listedVolumes[index] });
+	});
+
+	for (const clip of clips) {
+		await callSonosApi.call(this, 'POST', `players/${clip.playerId}/audioClip`, {
 			name: 'n8n',
 			appId: 'com.n8n.sonos',
 			streamUrl,
 			clipType: 'CUSTOM',
-			volume,
+			volume: clip.volume,
 		});
 	}
-	return { players: playerNames, url: streamUrl, volume };
+	return {
+		players: clips.map((clip) => clip.name),
+		url: streamUrl,
+		volume: volumeOutput(clips.map((clip) => clip.volume)),
+	};
 }
 
 export async function groupAll(this: IExecuteFunctions): Promise<IDataObject> {

@@ -353,30 +353,13 @@ export class Sonos implements INodeType {
 			{
 				displayName: 'Volume',
 				name: 'volume',
-				type: 'number' as NodePropertyTypes,
-				default: 50,
-				required: true,
-				typeOptions: {
-					maxValue: 100,
-					minValue: 1,
-					numberStepSize: 1,
-				},
-				displayOptions: {
-					show: {
-						action: ['playAudioClip'],
-					},
-				},
-			},
-			{
-				displayName: 'Volume',
-				name: 'volume',
 				type: 'string' as NodePropertyTypes,
 				default: '50',
 				required: true,
 				description: VOLUME_DESCRIPTION,
 				displayOptions: {
 					show: {
-						action: ['groupVolume'],
+						action: ['playAudioClip', 'groupVolume'],
 					},
 				},
 			},
