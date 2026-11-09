@@ -637,6 +637,43 @@ describe('Sonos Node', () => {
 				expect(result[0][0].json).toMatchObject({ favorite: '10Hz Bass Test', volume: [32, 20] });
 			});
 
+			it('Finds a favorite whatever the encoding, quotes or spacing of its name', async () => {
+				const fakeSonos = (executeStub.helpers.requestOAuth2 as jest.Mock).getMockImplementation()!;
+				executeStub.helpers.requestOAuth2 = jest.fn().mockImplementation((...args: any[]) => {
+					const options = args[1];
+					if (options.method === 'GET' && options.uri.endsWith('/favorites')) {
+						return Promise.resolve(
+							JSON.stringify({
+								items: [
+									{ id: '7', name: 'Radio Rock &amp; Roll' },
+									{ id: '8', name: 'Today\u2019s  Hits' },
+								],
+							}),
+						);
+					}
+					return fakeSonos(...args);
+				});
+				nodeParameters['action'] = 'playFavorite';
+				nodeParameters['players'] = 'Kitchen';
+
+				nodeParameters['favorite'] = 'Radio ROCK & Roll';
+				await node.execute.apply(executeStub);
+				nodeParameters['favorite'] = "today's hits";
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => call.body.favoriteId)).toEqual(['7', '8']);
+			});
+
+			it('Lists the available favorites when one is not found', async () => {
+				nodeParameters['action'] = 'playFavorite';
+				nodeParameters['players'] = 'Kitchen';
+				nodeParameters['favorite'] = 'Unknown radio';
+
+				await expect(node.execute.apply(executeStub)).rejects.toThrow(
+					'No Sonos favorite found for "Unknown radio". Available: ""Kill Your Darlings" // [DJ-Mix] By Dennis Kruissen - 10/2013", "10Hz Bass Test"',
+				);
+			});
+
 			it('Plays a favorite without touching the volume when not asked', async () => {
 				nodeParameters['action'] = 'playFavorite';
 				nodeParameters['players'] = 'Kitchen';

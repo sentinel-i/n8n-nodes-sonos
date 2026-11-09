@@ -91,8 +91,36 @@ export async function getTopology(
 	};
 }
 
+const HTML_ENTITIES: Record<string, string> = {
+	'&amp;': '&',
+	'&lt;': '<',
+	'&gt;': '>',
+	'&quot;': '"',
+	'&apos;': "'",
+	'&#39;': "'",
+};
+
+/**
+ * Decodes the HTML entities Sonos sometimes returns in names ("Rock &amp; Roll").
+ */
+export function decodeName(value: string | undefined): string {
+	return (value || '').replace(/&(amp|lt|gt|quot|apos|#39);/g, (entity) => HTML_ENTITIES[entity]);
+}
+
+/**
+ * Name used for comparisons: decoded, typographic quotes replaced, spaces collapsed, lower case.
+ */
+export function normalizeName(value: string | undefined): string {
+	return decodeName(value)
+		.replace(/[\u2018\u2019\u02bc`\u00b4]/g, "'")
+		.replace(/[\u201c\u201d]/g, '"')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.toLowerCase();
+}
+
 function sameName(a: string | undefined, b: string): boolean {
-	return (a || '').trim().toLowerCase() === b.trim().toLowerCase();
+	return normalizeName(a) === normalizeName(b);
 }
 
 /**
@@ -347,7 +375,8 @@ function resolveItemId(items: SonosItem[], reference: string, kind: string): Son
 		items.find((entry) => entry.id === reference) ||
 		items.find((entry) => sameName(entry.name, reference));
 	if (!item) {
-		throw new Error(`No Sonos ${kind} found for "${reference}"`);
+		const available = items.map((entry) => `"${decodeName(entry.name)}"`).join(', ');
+		throw new Error(`No Sonos ${kind} found for "${reference}". Available: ${available || 'none'}`);
 	}
 	return item;
 }
@@ -763,9 +792,9 @@ export async function loadFavorites(this: ILoadOptionsFunctions): Promise<INodeP
 	// The name is used as value so that a name written in an expression matches the list
 	for (const favorite of data.items!) {
 		returnData.push({
-			name: favorite.name as string,
-			description: favorite.description as string,
-			value: favorite.name as string,
+			name: decodeName(favorite.name),
+			description: decodeName(favorite.description),
+			value: decodeName(favorite.name),
 		});
 	}
 	return returnData;
@@ -787,8 +816,8 @@ export async function loadPlaylists(this: ILoadOptionsFunctions): Promise<INodeP
 
 	for (const playlist of data.playlists || []) {
 		returnData.push({
-			name: playlist.name as string,
-			value: playlist.name as string,
+			name: decodeName(playlist.name),
+			value: decodeName(playlist.name),
 		});
 	}
 	return returnData;
