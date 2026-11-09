@@ -515,6 +515,25 @@ describe('Sonos Node', () => {
 				expect(result[0][0].json).toMatchObject({ regrouped: true });
 			});
 
+			it('Regroups without copying the music before playing a favorite', async () => {
+				nodeParameters['action'] = 'playFavorite';
+				nodeParameters['players'] = 'Living Room';
+				nodeParameters['favorite'] = '10';
+				nodeParameters['fadeDuration'] = 2;
+
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => [call.uri, call.body])).toEqual([
+					[api('households/HOUSEHOLD_1/groups/createGroup'), { playerIds: ['RINCON_LIVING'] }],
+					[api('players/RINCON_LIVING/playerVolume'), { volume: 0 }],
+					[
+						api('groups/NEW_GROUP:99/favorites'),
+						expect.objectContaining({ favoriteId: '10', playOnCompletion: true }),
+					],
+					[api('players/RINCON_LIVING/playerVolume'), { volume: 30 }],
+				]);
+			});
+
 			it('Rejects an unknown player', async () => {
 				nodeParameters['action'] = 'pause';
 				nodeParameters['players'] = 'Office, Garage';

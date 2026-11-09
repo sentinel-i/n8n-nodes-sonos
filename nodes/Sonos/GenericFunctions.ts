@@ -199,6 +199,7 @@ async function ensureGroup(
 	household: string,
 	topology: SonosTopology,
 	playerIds: string[],
+	keepMusic = true,
 ): Promise<{ group: SonosGroup; regrouped: boolean }> {
 	const current = topology.groups.find((g) => g.playerIds.includes(playerIds[0]));
 	if (current && sameSet(current.playerIds, playerIds)) {
@@ -207,17 +208,19 @@ async function ensureGroup(
 
 	const path = `households/${household}/groups/createGroup`;
 	let response;
+	let musicKept = keepMusic && current !== undefined;
 	try {
 		response = await callSonosApi.call(this, 'POST', path, {
 			playerIds,
-			...(current ? { musicContextGroupId: current.id } : {}),
+			...(musicKept ? { musicContextGroupId: current!.id } : {}),
 		});
 	} catch (error) {
 		// Some content (e.g. a Spotify Connect session) cannot be copied to a new group:
 		// group the players without keeping the current music
-		if (!current) {
+		if (!musicKept) {
 			throw error;
 		}
+		musicKept = false;
 		response = await callSonosApi.call(this, 'POST', path, { playerIds });
 	}
 	let group = response.group as unknown as SonosGroup | undefined;
@@ -232,7 +235,8 @@ async function ensureGroup(
 		group: {
 			...group,
 			playerIds: group.playerIds || playerIds,
-			playbackState: group.playbackState ?? current?.playbackState,
+			playbackState:
+				group.playbackState ?? (musicKept ? current?.playbackState : 'PLAYBACK_STATE_IDLE'),
 		},
 		regrouped: true,
 	};
@@ -244,7 +248,11 @@ async function ensureGroup(
  * Workflows made with the former Group field target the group containing that player
  * (or the first group found), without regrouping.
  */
-async function getZoneForItem(this: IExecuteFunctions, itemIndex: number): Promise<Zone> {
+async function getZoneForItem(
+	this: IExecuteFunctions,
+	itemIndex: number,
+	keepMusic = true,
+): Promise<Zone> {
 	const household = this.getNodeParameter('household', itemIndex) as string;
 	const references = toList(this.getNodeParameter('players', itemIndex, []));
 	const topology = await getTopology.call(this, household);
@@ -256,7 +264,13 @@ async function getZoneForItem(this: IExecuteFunctions, itemIndex: number): Promi
 	}
 
 	const playerIds = resolvePlayerIds(topology, references);
-	const { group, regrouped } = await ensureGroup.call(this, household, topology, playerIds);
+	const { group, regrouped } = await ensureGroup.call(
+		this,
+		household,
+		topology,
+		playerIds,
+		keepMusic,
+	);
 	return { topology, group, playerIds, regrouped };
 }
 
@@ -576,7 +590,8 @@ export async function playFavorite(
 		String(this.getNodeParameter('favorite', itemIndex)),
 		'favorite',
 	);
-	const zone = await getZoneForItem.call(this, itemIndex);
+	// The new content replaces the music, so it is not copied when regrouping
+	const zone = await getZoneForItem.call(this, itemIndex, false);
 	const volumes = await loadContent.call(
 		this,
 		itemIndex,
@@ -603,7 +618,8 @@ export async function playPlaylist(
 		String(this.getNodeParameter('playlist', itemIndex)),
 		'playlist',
 	);
-	const zone = await getZoneForItem.call(this, itemIndex);
+	// The new content replaces the music, so it is not copied when regrouping
+	const zone = await getZoneForItem.call(this, itemIndex, false);
 	const volumes = await loadContent.call(
 		this,
 		itemIndex,
