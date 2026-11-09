@@ -5,7 +5,6 @@ import {
 	loadPlayers,
 	getFirstGroup,
 	loadFavorites,
-	loadGroups,
 	loadPlaylists,
 	loadPlayerNames,
 	resolveGroup,
@@ -370,18 +369,6 @@ describe('Sonos Node', () => {
 				.map((call) => [call.uri.split('/players/')[1].split('/')[0], call.body.volume]);
 
 		describe('Configuration', () => {
-			it('Lists groups with their coordinator as value', async () => {
-				const result = await loadGroups.call(optionsStub);
-
-				expect(result.map((option) => option.name)).toEqual([
-					'Kitchen',
-					'Living Room + 1',
-					'Office',
-				]);
-				expect(result[1].value).toEqual('RINCON_LIVING');
-				expect(result[1].description).toEqual('Living Room, Dining Room');
-			});
-
 			it('Lists players by name', async () => {
 				nodeParameters['action'] = 'pause';
 				const result = await loadPlayerNames.call(optionsStub);

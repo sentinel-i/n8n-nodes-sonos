@@ -13,7 +13,6 @@ import {
 	groupAll,
 	groupPlayers,
 	loadFavorites,
-	loadGroups,
 	loadHomeTheaterPlayback,
 	loadHouseholds,
 	loadPlayerNames,
@@ -416,7 +415,6 @@ export class Sonos implements INodeType {
 		loadOptions: {
 			loadHouseholds,
 			loadFavorites,
-			loadGroups,
 			loadPlayerNames,
 			loadPlayers,
 			loadPlaylists,

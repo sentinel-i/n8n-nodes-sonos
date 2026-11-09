@@ -706,29 +706,6 @@ export async function loadPlayerNames(
 	}));
 }
 
-/**
- * Lists the current groups. The stored value is the coordinator player id,
- * which stays valid when the group id changes after a regrouping.
- */
-export async function loadGroups(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	let topology: SonosTopology;
-	try {
-		const household = this.getNodeParameter('household', 0) as string;
-		topology = await getTopology.call(this, household);
-	} catch (err) {
-		if (err.message.includes('No credentials got returned!')) {
-			return [];
-		}
-		throw err;
-	}
-
-	return topology.groups.map((group) => ({
-		name: group.name,
-		value: group.coordinatorId,
-		description: (describeGroup(topology, group).members as string[]).join(', '),
-	}));
-}
-
 export async function getFirstGroup(
 	this: ILoadOptionsFunctions | IExecuteFunctions,
 ): Promise<string> {
