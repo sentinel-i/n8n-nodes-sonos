@@ -13,9 +13,9 @@ import {
 	groupAll,
 	groupPlayers,
 	loadFavorites,
-	loadGroups,
 	loadHomeTheaterPlayback,
 	loadHouseholds,
+	loadPlayerNames,
 	loadPlayers,
 	loadPlaylists,
 	playAudioClip,
@@ -158,7 +158,7 @@ export class Sonos implements INodeType {
 					},
 				},
 				typeOptions: {
-					loadOptionsMethod: 'loadPlayers',
+					loadOptionsMethod: 'loadPlayerNames',
 					loadOptionsDependsOn: ['household', 'action'],
 				},
 			},
@@ -177,7 +177,7 @@ export class Sonos implements INodeType {
 					},
 				},
 				typeOptions: {
-					loadOptionsMethod: 'loadPlayers',
+					loadOptionsMethod: 'loadPlayerNames',
 					loadOptionsDependsOn: ['household', 'action'],
 				},
 			},
@@ -415,7 +415,7 @@ export class Sonos implements INodeType {
 		loadOptions: {
 			loadHouseholds,
 			loadFavorites,
-			loadGroups,
+			loadPlayerNames,
 			loadPlayers,
 			loadPlaylists,
 		},

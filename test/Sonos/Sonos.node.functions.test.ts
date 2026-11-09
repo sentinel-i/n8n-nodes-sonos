@@ -5,8 +5,8 @@ import {
 	loadPlayers,
 	getFirstGroup,
 	loadFavorites,
-	loadGroups,
 	loadPlaylists,
+	loadPlayerNames,
 	resolveGroup,
 	getTopology,
 	timing,
@@ -127,9 +127,11 @@ describe('Sonos Node', () => {
 			expect(result[0].name).toEqual(
 				'"Kill Your Darlings" // [DJ-Mix] By Dennis Kruissen - 10/2013',
 			);
-			expect(result[0].value).toEqual('10');
+			expect(result[0].value).toEqual(
+				'"Kill Your Darlings" // [DJ-Mix] By Dennis Kruissen - 10/2013',
+			);
 			expect(result[1].name).toEqual('10Hz Bass Test');
-			expect(result[1].value).toEqual('41');
+			expect(result[1].value).toEqual('10Hz Bass Test');
 		});
 	});
 
@@ -367,24 +369,24 @@ describe('Sonos Node', () => {
 				.map((call) => [call.uri.split('/players/')[1].split('/')[0], call.body.volume]);
 
 		describe('Configuration', () => {
-			it('Lists groups with their coordinator as value', async () => {
-				const result = await loadGroups.call(optionsStub);
+			it('Lists players by name', async () => {
+				nodeParameters['action'] = 'pause';
+				const result = await loadPlayerNames.call(optionsStub);
 
-				expect(result.map((option) => option.name)).toEqual([
-					'Kitchen',
-					'Living Room + 1',
-					'Office',
+				expect(result).toEqual([
+					{ name: 'Kitchen', value: 'Kitchen' },
+					{ name: 'Living Room', value: 'Living Room' },
+					{ name: 'Dining Room', value: 'Dining Room' },
+					{ name: 'Office', value: 'Office' },
 				]);
-				expect(result[1].value).toEqual('RINCON_LIVING');
-				expect(result[1].description).toEqual('Living Room, Dining Room');
 			});
 
 			it('Lists Sonos playlists', async () => {
 				const result = await loadPlaylists.call(optionsStub);
 
 				expect(result).toEqual([
-					{ name: 'Morning Mix', value: '0' },
-					{ name: 'Evening Mix', value: '1' },
+					{ name: 'Morning Mix', value: 'Morning Mix' },
+					{ name: 'Evening Mix', value: 'Evening Mix' },
 				]);
 			});
 
@@ -463,6 +465,60 @@ describe('Sonos Node', () => {
 					members: ['Living Room', 'Dining Room', 'Office'],
 					regrouped: true,
 				});
+			});
+
+			it('Groups without the current music when Sonos cannot copy it', async () => {
+				nodeParameters['action'] = 'pause';
+				nodeParameters['players'] = 'Living Room';
+				const fakeSonos = (executeStub.helpers.requestOAuth2 as jest.Mock).getMockImplementation()!;
+				executeStub.helpers.requestOAuth2 = jest.fn().mockImplementation((...args: any[]) => {
+					const options = args[1];
+					if (
+						options.uri.endsWith('/createGroup') &&
+						JSON.parse(options.body).musicContextGroupId
+					) {
+						calls.push({
+							method: options.method,
+							uri: options.uri,
+							body: JSON.parse(options.body),
+						});
+						return Promise.reject(
+							new Error('499 - ERROR_PLAYBACK_FAILED music context content cannot be copied'),
+						);
+					}
+					return fakeSonos(...args);
+				});
+
+				const result = await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => [call.uri, call.body])).toEqual([
+					[
+						api('households/HOUSEHOLD_1/groups/createGroup'),
+						{ playerIds: ['RINCON_LIVING'], musicContextGroupId: 'RINCON_LIVING:20' },
+					],
+					[api('households/HOUSEHOLD_1/groups/createGroup'), { playerIds: ['RINCON_LIVING'] }],
+					[api('groups/NEW_GROUP:99/playback/pause'), undefined],
+				]);
+				expect(result[0][0].json).toMatchObject({ regrouped: true });
+			});
+
+			it('Regroups without copying the music before playing a favorite', async () => {
+				nodeParameters['action'] = 'playFavorite';
+				nodeParameters['players'] = 'Living Room';
+				nodeParameters['favorite'] = '10';
+				nodeParameters['fadeDuration'] = 2;
+
+				await node.execute.apply(executeStub);
+
+				expect(commands().map((call) => [call.uri, call.body])).toEqual([
+					[api('households/HOUSEHOLD_1/groups/createGroup'), { playerIds: ['RINCON_LIVING'] }],
+					[api('players/RINCON_LIVING/playerVolume'), { volume: 0 }],
+					[
+						api('groups/NEW_GROUP:99/favorites'),
+						expect.objectContaining({ favoriteId: '10', playOnCompletion: true }),
+					],
+					[api('players/RINCON_LIVING/playerVolume'), { volume: 30 }],
+				]);
 			});
 
 			it('Rejects an unknown player', async () => {

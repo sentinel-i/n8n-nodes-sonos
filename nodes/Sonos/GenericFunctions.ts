@@ -199,22 +199,30 @@ async function ensureGroup(
 	household: string,
 	topology: SonosTopology,
 	playerIds: string[],
+	keepMusic = true,
 ): Promise<{ group: SonosGroup; regrouped: boolean }> {
 	const current = topology.groups.find((g) => g.playerIds.includes(playerIds[0]));
 	if (current && sameSet(current.playerIds, playerIds)) {
 		return { group: current, regrouped: false };
 	}
 
-	const body: IDataObject = { playerIds };
-	if (current) {
-		body.musicContextGroupId = current.id;
+	const path = `households/${household}/groups/createGroup`;
+	let response;
+	let musicKept = keepMusic && current !== undefined;
+	try {
+		response = await callSonosApi.call(this, 'POST', path, {
+			playerIds,
+			...(musicKept ? { musicContextGroupId: current!.id } : {}),
+		});
+	} catch (error) {
+		// Some content (e.g. a Spotify Connect session) cannot be copied to a new group:
+		// group the players without keeping the current music
+		if (!musicKept) {
+			throw error;
+		}
+		musicKept = false;
+		response = await callSonosApi.call(this, 'POST', path, { playerIds });
 	}
-	const response = await callSonosApi.call(
-		this,
-		'POST',
-		`households/${household}/groups/createGroup`,
-		body,
-	);
 	let group = response.group as unknown as SonosGroup | undefined;
 	if (!group || !group.id) {
 		const refreshed = await getTopology.call(this, household);
@@ -227,7 +235,8 @@ async function ensureGroup(
 		group: {
 			...group,
 			playerIds: group.playerIds || playerIds,
-			playbackState: group.playbackState ?? current?.playbackState,
+			playbackState:
+				group.playbackState ?? (musicKept ? current?.playbackState : 'PLAYBACK_STATE_IDLE'),
 		},
 		regrouped: true,
 	};
@@ -239,7 +248,11 @@ async function ensureGroup(
  * Workflows made with the former Group field target the group containing that player
  * (or the first group found), without regrouping.
  */
-async function getZoneForItem(this: IExecuteFunctions, itemIndex: number): Promise<Zone> {
+async function getZoneForItem(
+	this: IExecuteFunctions,
+	itemIndex: number,
+	keepMusic = true,
+): Promise<Zone> {
 	const household = this.getNodeParameter('household', itemIndex) as string;
 	const references = toList(this.getNodeParameter('players', itemIndex, []));
 	const topology = await getTopology.call(this, household);
@@ -251,7 +264,13 @@ async function getZoneForItem(this: IExecuteFunctions, itemIndex: number): Promi
 	}
 
 	const playerIds = resolvePlayerIds(topology, references);
-	const { group, regrouped } = await ensureGroup.call(this, household, topology, playerIds);
+	const { group, regrouped } = await ensureGroup.call(
+		this,
+		household,
+		topology,
+		playerIds,
+		keepMusic,
+	);
 	return { topology, group, playerIds, regrouped };
 }
 
@@ -571,7 +590,8 @@ export async function playFavorite(
 		String(this.getNodeParameter('favorite', itemIndex)),
 		'favorite',
 	);
-	const zone = await getZoneForItem.call(this, itemIndex);
+	// The new content replaces the music, so it is not copied when regrouping
+	const zone = await getZoneForItem.call(this, itemIndex, false);
 	const volumes = await loadContent.call(
 		this,
 		itemIndex,
@@ -598,7 +618,8 @@ export async function playPlaylist(
 		String(this.getNodeParameter('playlist', itemIndex)),
 		'playlist',
 	);
-	const zone = await getZoneForItem.call(this, itemIndex);
+	// The new content replaces the music, so it is not copied when regrouping
+	const zone = await getZoneForItem.call(this, itemIndex, false);
 	const volumes = await loadContent.call(
 		this,
 		itemIndex,
@@ -673,25 +694,15 @@ export async function loadPlayers(
 }
 
 /**
- * Lists the current groups. The stored value is the coordinator player id,
- * which stays valid when the group id changes after a regrouping.
+ * Lists the players by name. The name is used as value so that names written in an
+ * expression (e.g. from a schedule table) match the list.
  */
-export async function loadGroups(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	let topology: SonosTopology;
-	try {
-		const household = this.getNodeParameter('household', 0) as string;
-		topology = await getTopology.call(this, household);
-	} catch (err) {
-		if (err.message.includes('No credentials got returned!')) {
-			return [];
-		}
-		throw err;
-	}
-
-	return topology.groups.map((group) => ({
-		name: group.name,
-		value: group.coordinatorId,
-		description: (describeGroup(topology, group).members as string[]).join(', '),
+export async function loadPlayerNames(
+	this: ILoadOptionsFunctions,
+): Promise<INodePropertyOptions[]> {
+	return (await loadPlayers.call(this)).map((player) => ({
+		name: player.name,
+		value: player.name,
 	}));
 }
 
@@ -749,11 +760,12 @@ export async function loadFavorites(this: ILoadOptionsFunctions): Promise<INodeP
 		throw new Error(`SONOS Error: ${err}`);
 	}
 
+	// The name is used as value so that a name written in an expression matches the list
 	for (const favorite of data.items!) {
 		returnData.push({
 			name: favorite.name as string,
 			description: favorite.description as string,
-			value: favorite.id as string,
+			value: favorite.name as string,
 		});
 	}
 	return returnData;
@@ -776,7 +788,7 @@ export async function loadPlaylists(this: ILoadOptionsFunctions): Promise<INodeP
 	for (const playlist of data.playlists || []) {
 		returnData.push({
 			name: playlist.name as string,
-			value: playlist.id as string,
+			value: playlist.name as string,
 		});
 	}
 	return returnData;
