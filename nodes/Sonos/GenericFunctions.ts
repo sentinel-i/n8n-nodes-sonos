@@ -205,16 +205,21 @@ async function ensureGroup(
 		return { group: current, regrouped: false };
 	}
 
-	const body: IDataObject = { playerIds };
-	if (current) {
-		body.musicContextGroupId = current.id;
+	const path = `households/${household}/groups/createGroup`;
+	let response;
+	try {
+		response = await callSonosApi.call(this, 'POST', path, {
+			playerIds,
+			...(current ? { musicContextGroupId: current.id } : {}),
+		});
+	} catch (error) {
+		// Some content (e.g. a Spotify Connect session) cannot be copied to a new group:
+		// group the players without keeping the current music
+		if (!current) {
+			throw error;
+		}
+		response = await callSonosApi.call(this, 'POST', path, { playerIds });
 	}
-	const response = await callSonosApi.call(
-		this,
-		'POST',
-		`households/${household}/groups/createGroup`,
-		body,
-	);
 	let group = response.group as unknown as SonosGroup | undefined;
 	if (!group || !group.id) {
 		const refreshed = await getTopology.call(this, household);
@@ -673,6 +678,19 @@ export async function loadPlayers(
 }
 
 /**
+ * Lists the players by name. The name is used as value so that names written in an
+ * expression (e.g. from a schedule table) match the list.
+ */
+export async function loadPlayerNames(
+	this: ILoadOptionsFunctions,
+): Promise<INodePropertyOptions[]> {
+	return (await loadPlayers.call(this)).map((player) => ({
+		name: player.name,
+		value: player.name,
+	}));
+}
+
+/**
  * Lists the current groups. The stored value is the coordinator player id,
  * which stays valid when the group id changes after a regrouping.
  */
@@ -749,11 +767,12 @@ export async function loadFavorites(this: ILoadOptionsFunctions): Promise<INodeP
 		throw new Error(`SONOS Error: ${err}`);
 	}
 
+	// The name is used as value so that a name written in an expression matches the list
 	for (const favorite of data.items!) {
 		returnData.push({
 			name: favorite.name as string,
 			description: favorite.description as string,
-			value: favorite.id as string,
+			value: favorite.name as string,
 		});
 	}
 	return returnData;
@@ -776,7 +795,7 @@ export async function loadPlaylists(this: ILoadOptionsFunctions): Promise<INodeP
 	for (const playlist of data.playlists || []) {
 		returnData.push({
 			name: playlist.name as string,
-			value: playlist.id as string,
+			value: playlist.name as string,
 		});
 	}
 	return returnData;
